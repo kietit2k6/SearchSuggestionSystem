@@ -1,20 +1,24 @@
 #include "LRUCache.h"
 #include "LRUCache.h"
-
+using namespace std;
 // Constructor
-LRUCache::LRUCache(std::size_t capacity)
+LRUCache::LRUCache(
+    size_t capacity)
     : capacity_(capacity)
 {
 }
 
 // Lấy dữ liệu từ cache
-std::optional<AutocompleteResult> LRUCache::get(const std::string& key)
+
+optional<AutocompleteResult> LRUCache::get(const 
+    string& key)
 {
     auto it = map_.find(key);
 
     // Không tìm thấy
     if (it == map_.end())
-        return std::nullopt;
+        return 
+        nullopt;
 
     // Đưa phần tử vừa truy cập lên đầu danh sách
     list_.splice(list_.begin(), list_, it->second);
@@ -23,7 +27,8 @@ std::optional<AutocompleteResult> LRUCache::get(const std::string& key)
 }
 
 // Thêm hoặc cập nhật dữ liệu
-void LRUCache::put(const std::string& key,
+void LRUCache::put(const 
+    string& key,
                    const AutocompleteResult& value)
 {
     auto it = map_.find(key);

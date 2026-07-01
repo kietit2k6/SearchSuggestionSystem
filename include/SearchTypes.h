@@ -2,22 +2,22 @@
 
 #include <string>
 #include <vector>
-
+using namespace std;
 // ── Entry trong kết quả autocomplete
 struct WordEntry {
-    std::string word;
+    string word;
     int frequency = 0;
 };
 
 // ── Kết quả autocomplete 
 struct AutocompleteResult {
-    std::vector<WordEntry> words;
+    vector<WordEntry> words;
     double searchTimeMs = 0.0;
     bool   fromCache    = false;   
 };
 
 struct FuzzyResult {
-    std::string word;
+    string word;
     int editDistance = 0;
     int frequency    = 0;
 

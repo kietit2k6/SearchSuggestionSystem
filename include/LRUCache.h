@@ -5,27 +5,27 @@
 #include <optional>
 #include <unordered_map>
 #include <list>
-
+using namespace std;
 class LRUCache {
 public:
-    explicit LRUCache(std::size_t capacity = 128);
+    explicit LRUCache(size_t capacity = 128);
 
     // nullopt = cache miss
-    std::optional<AutocompleteResult> get(const std::string& key);
+    optional<AutocompleteResult> get(const string& key);
 
     // Chèn / cập nhật; tự đẩy phần tử cũ nhất ra nếu đầy
-    void put(const std::string& key, const AutocompleteResult& value);
+    void put(const string& key, const AutocompleteResult& value);
 
     // Xóa toàn bộ cache — gọi sau mỗi insert / remove
     void invalidate();
 
-    std::size_t size() const { return map_.size(); }
+    size_t size() const { return map_.size(); }
 
 private:
-    using Entry = std::pair<std::string, AutocompleteResult>;
+    using Entry = pair<string, AutocompleteResult>;
 
-    std::size_t              capacity_;
-    std::list<Entry>         list_;  
-    std::unordered_map<std::string,
-        std::list<Entry>::iterator> map_;
+    size_t              capacity_;
+    list<Entry>         list_;  
+    unordered_map<string,
+        list<Entry>::iterator> map_;
 };

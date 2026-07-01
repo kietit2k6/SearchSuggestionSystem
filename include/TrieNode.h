@@ -3,16 +3,16 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
-
+using namespace std;
 struct TrieNode {
     char ch;                                     
-    std::unordered_map<char, TrieNode*> children; 
+    unordered_map<char, TrieNode*> children; 
     bool isEndOfWord = false;                    
     int frequency = 0;                            
-    std::string word;                             
+    string word;                             
 
     // Bộ nhớ đệm lưu sẵn Top từ khóa hot nhất đi qua nút này
-    std::vector<std::pair<int, std::string>> topSuggestions;
+    vector<pair<int, string>> topSuggestions;
 
     explicit TrieNode(char c = '\0') : ch(c) {}
 

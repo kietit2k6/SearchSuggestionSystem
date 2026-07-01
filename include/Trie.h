@@ -1,97 +1,95 @@
-
-
 #include "TrieNode.h"
 #include <string>
 #include <vector>
 #include <chrono>
-#include <memory>          
-#include <shared_mutex>    
-#include <optional>        
+#include <memory>
+#include <mutex>
+#include <shared_mutex>
+#include <optional>
 #include <unordered_map>
 #include <list>
 
-
 #include "SearchTypes.h"
 #include "LRUCache.h"
-
-class Trie {
+using namespace std;
+class Trie
+{
 public:
-    explicit Trie(std::size_t cacheCapacity = 128);
-    ~Trie() = default;  
+  explicit Trie(size_t cacheCapacity = 128);
+  ~Trie() = default;
 
-    // Thao tác cơ bản
-    bool insert(const std::string& word);
-    bool remove(const std::string& word);
-    bool search(const std::string& word) const;
-    bool startsWith(const std::string& prefix) const;
+  // Thao tác cơ bản
+  bool insert(const string &word);
+  bool remove(const string &word);
+  bool search(const string &word) const;
+  bool startsWith(const string &prefix) const;
 
-    // Batch insert 
-    int insertBatch(const std::vector<std::string>& words);
+  // Batch insert
+  int insertBatch(const vector<string> &words); //
 
-    //Dùng LRU cache: gọi lặp với cùng prefix 
-    AutocompleteResult autocomplete(const std::string& prefix,
-                                    int maxResults = 10) const;
+  // Dùng LRU cache: gọi lặp với cùng prefix
+  AutocompleteResult autocomplete(const string &prefix, int maxResults = 10) const; //
 
-    std::vector<FuzzyResult> fuzzySearch(const std::string& word,
-                                         int maxErrors = 1) const;
+  vector<FuzzyResult> fuzzySearch(const string &word,
+                                       int maxErrors = 1) const;
 
-    // Longest Common Prefix
-    std::string longestCommonPrefix() const;
-    static std::string longestCommonPrefixDivideConquer(
-            const std::vector<std::string>& words);
+  // Longest Common Prefix
+  string longestCommonPrefix() const;
+  static string longestCommonPrefixDivideConquer(
+      const vector<string> &words);
 
-    //  Thống kê 
-    int getWordCount() const;
-    int getNodeCount() const;
+  //  Thống kê
+  int getWordCount() const;
+  int getNodeCount() const;
 
-    //duyệt trie khi được gọi, không cache riêng
-    std::vector<std::string> getAllWords() const;
+  // duyệt trie khi được gọi, không cache riêng
+  vector<string> getAllWords() const;
 
-    //Quản lý frequency 
-    void incrementFrequency(const std::string& word);
-    int  getFrequency(const std::string& word) const;
+  // Quản lý frequency
+  void incrementFrequency(const string &word);
+  int getFrequency(const string &word) const;
 
-    //  Lưu cả cấu trúc cây lẫn frequency để không mất dữ liệu
-    //  khi restart ứng dụng.
-    bool saveToDisk(const std::string& filename) const;
-    bool loadFromDisk(const std::string& filename);
+  //  Lưu cả cấu trúc cây lẫn frequency để không mất dữ liệu
+  //  khi restart ứng dụng.
+  bool saveToDisk(const string &filename) const;
+  bool loadFromDisk(const string &filename);
 
 private:
-    std::unique_ptr<TrieNode> root_;
+  unique_ptr<TrieNode> root_;
 
-    // SWMR: shared_lock cho const methods, unique_lock cho write
-    mutable std::shared_mutex mutex_;
-    mutable LRUCache          cache_;
+  // SWMR: shared_lock cho const methods, unique_lock cho write
+  mutable shared_mutex mutex_;
+  mutable LRUCache cache_;
 
-    int wordCount_ = 0;
-    int nodeCount_ = 1;   
+  int wordCount_ = 0;
+  int nodeCount_ = 1;
 
-    //  Internal helpers 
+  //  Internal helpers
 
-    // Observer pointer 
-    const TrieNode* findNode(const std::string& prefix) const;
+  // Observer pointer
+  const TrieNode *findNode(const string &prefix) const;
 
-    // Min-heap
-    void collectTopK(const TrieNode*       node,
-                     const std::string&    current,
-                     std::vector<WordEntry>& results,
-                     int                   maxResults) const;
+  // Min-heap
+  void collectTopK(const TrieNode *node, 
+            const string &current, 
+            vector<WordEntry> &results, 
+            int maxResults) const; //
 
-    void fuzzySearchHelper(const TrieNode*           node,
-                           char                      ch,
-                           const std::string&        target,
-                           std::string&              current,
-                           std::vector<int>&         prevRow,
-                           std::vector<FuzzyResult>& results,
-                           int                       maxErrors) const;
+  void fuzzySearchHelper(const TrieNode *node,
+                         char ch,
+                         const string &target,
+                         string &current,
+                         vector<int> &prevRow,
+                         vector<FuzzyResult> &results,
+                         int maxErrors) const;
 
-    bool deleteHelper(TrieNode* node, const std::string& word, int depth);
+  bool deleteHelper(TrieNode *node, const string &word, int depth);
 
-    // LCP divide & conquer
-    static std::string lcpHelper(const std::vector<std::string>& words,
-                                  int left, int right);
-    static std::string commonPrefix(const std::string& a,
-                                    const std::string& b);
-    //chuyển hoá chuỗi
-    static std::string normalize(const std::string& s);
+  // LCP divide & conquer
+  static string lcpHelper(const vector<string> &words,
+                               int left, int right);
+  static string commonPrefix(const string &a,
+                                  const string &b);
+  // chuyển hoá chuỗi
+  static string normalize(const string &s);
 };
