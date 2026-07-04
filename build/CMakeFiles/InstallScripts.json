@@ -1,9 +1,0 @@
-{
-	"InstallScripts" : 
-	[
-		"/Users/htk/Desktop/SearchSuggestionSystem/build/cmake_install.cmake",
-		"/Users/htk/Desktop/SearchSuggestionSystem/build/_deps/glfw-build/cmake_install.cmake",
-		"/Users/htk/Desktop/SearchSuggestionSystem/build/_deps/glfw-build/src/cmake_install.cmake"
-	],
-	"Parallel" : false
-}
