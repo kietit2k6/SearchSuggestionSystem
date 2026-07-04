@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstring>
 #include <ctime>
+#include <fstream>
 #include <iostream>
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -53,6 +54,33 @@ bool GuiApp::init() {
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO(); (void)io;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard; // Keyboard navigation
+
+    // Find and load a system font that supports Vietnamese glyphs
+    std::string systemFont;
+    const std::vector<std::string> paths = {
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "/System/Library/Fonts/Supplemental/Tahoma.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
+        "C:\\Windows\\Fonts\\Arial.ttf",
+        "C:\\Windows\\Fonts\\Tahoma.ttf",
+        "C:\\Windows\\Fonts\\segoeui.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans.ttf"
+    };
+    for (const auto& p : paths) {
+        std::ifstream f(p);
+        if (f.good()) {
+            systemFont = p;
+            break;
+        }
+    }
+
+    if (!systemFont.empty()) {
+        io.Fonts->AddFontFromFileTTF(systemFont.c_str(), 16.0f, nullptr, io.Fonts->GetGlyphRangesVietnamese());
+    } else {
+        io.Fonts->AddFontDefault();
+    }
 
     // Apply premium styling
     setupDarkTheme();
