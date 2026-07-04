@@ -32,21 +32,24 @@ uint32_t Trie::unicodeLower(uint32_t cp) noexcept {
     if (cp >= 0x14A && cp <= 0x177 && !(cp & 1)) return cp + 1;
     if (cp == 0x178) return 0xFF;                             // Ÿ → ÿ
     if (cp >= 0x179 && cp <= 0x17E &&  (cp & 1)) return cp + 1;
+    // Latin Extended-B (Vietnamese Ơ/ơ and Ư/ư)
+    if (cp == 0x01A0) return 0x01A1;                          // Ơ → ơ
+    if (cp == 0x01AF) return 0x01B0;                          // Ư → ư
     // Latin Extended Additional U+1E00-U+1EFF (Vietnamese precomposed):
     // even codepoint = uppercase, odd = lowercase for virtually all pairs.
     if (cp >= 0x1E00 && cp <= 0x1EFE && !(cp & 1)) return cp + 1;
     return cp;
 }
 
-// UTF-8 aware case-fold to lowercase.
-// Handles 1-, 2- and 3-byte sequences; passes 4-byte sequences through.
+// UTF-8 aware case-fold to lowercase and Vietnamese NFD-to-NFC compositor.
 std::string Trie::normalize(const std::string& s) {
-    std::string result;
-    result.reserve(s.size());
+    std::vector<uint32_t> cps;
+    cps.reserve(s.size());
 
     const auto* p   = reinterpret_cast<const unsigned char*>(s.data());
     const auto* end = p + s.size();
 
+    // 1. Decode UTF-8 to UTF-32 and case-fold each codepoint
     while (p < end) {
         uint32_t cp     = 0;
         int      seqLen = 1;
@@ -63,33 +66,148 @@ std::string Trie::normalize(const std::string& s) {
                    | (static_cast<uint32_t>(p[1] & 0x3F) <<  6)
                    | (p[2] & 0x3F);
             seqLen = 3;
-        } else if ((*p & 0xF8) == 0xF0 && p + 3 < end) {
-            // 4-byte — pass through unchanged
-            for (int i = 0; i < 4; ++i) result += static_cast<char>(p[i]);
-            p += 4;
-            continue;
+        } else if ((*p & 0xF8) == 0xF0 && p + 3 < end
+                   && (p[1] & 0xC0) == 0x80 && (p[2] & 0xC0) == 0x80 && (p[3] & 0xC0) == 0x80) {
+            cp     = (static_cast<uint32_t>(p[0] & 0x07) << 18)
+                   | (static_cast<uint32_t>(p[1] & 0x3F) << 12)
+                   | (static_cast<uint32_t>(p[2] & 0x3F) << 6)
+                   | (p[3] & 0x3F);
+            seqLen = 4;
         } else {
-            // Invalid / lone continuation — copy raw byte
-            result += static_cast<char>(*p++);
-            continue;
+            cp     = *p;
+            seqLen = 1;
         }
 
-        cp = unicodeLower(cp);
+        cps.push_back(unicodeLower(cp));
+        p += seqLen;
+    }
 
-        // Re-encode as UTF-8
+    // 2. Compose NFD to NFC (Vietnamese diacritics and tones)
+    if (cps.size() >= 2) {
+        std::vector<uint32_t> composed;
+        composed.reserve(cps.size());
+
+        for (size_t i = 0; i < cps.size(); ++i) {
+            uint32_t cp = cps[i];
+
+            while (i + 1 < cps.size()) {
+                uint32_t next = cps[i + 1];
+                bool merged = false;
+
+                // A. Base diacritics (breve, circumflex, horn)
+                if (next == 0x0306) {      // combining breve
+                    if (cp == 'a') { cp = 0x0103; merged = true; } // ă
+                } else if (next == 0x0302) { // combining circumflex
+                    if (cp == 'a') { cp = 0x00E2; merged = true; } // â
+                    else if (cp == 'e') { cp = 0x00EA; merged = true; } // ê
+                    else if (cp == 'o') { cp = 0x00F4; merged = true; } // ô
+                } else if (next == 0x031B) { // combining horn
+                    if (cp == 'o') { cp = 0x01A1; merged = true; } // ơ
+                    else if (cp == 'u') { cp = 0x01B0; merged = true; } // ư
+                }
+
+                // B. Tone marks
+                if (!merged) {
+                    if (next == 0x0300) {      // grave (huyền)
+                        if (cp == 'a') { cp = 0x00E0; merged = true; }
+                        else if (cp == 0x0103) { cp = 0x1EB1; merged = true; } // ằ
+                        else if (cp == 0x00E2) { cp = 0x1EA7; merged = true; } // ầ
+                        else if (cp == 'e') { cp = 0x00E8; merged = true; }
+                        else if (cp == 0x00EA) { cp = 0x1EC1; merged = true; } // ề
+                        else if (cp == 'i') { cp = 0x00EC; merged = true; }
+                        else if (cp == 'o') { cp = 0x00F2; merged = true; }
+                        else if (cp == 0x00F4) { cp = 0x1ED3; merged = true; } // ồ
+                        else if (cp == 0x01A1) { cp = 0x1EDD; merged = true; } // ờ
+                        else if (cp == 'u') { cp = 0x00F9; merged = true; }
+                        else if (cp == 0x01B0) { cp = 0x1EEB; merged = true; } // ừ
+                        else if (cp == 'y') { cp = 0x1EF3; merged = true; }
+                    } else if (next == 0x0301) { // acute (sắc)
+                        if (cp == 'a') { cp = 0x00E1; merged = true; }
+                        else if (cp == 0x0103) { cp = 0x1EAF; merged = true; } // ắ
+                        else if (cp == 0x00E2) { cp = 0x1EA5; merged = true; } // ấ
+                        else if (cp == 'e') { cp = 0x00E9; merged = true; }
+                        else if (cp == 0x00EA) { cp = 0x1EBF; merged = true; } // ế
+                        else if (cp == 'i') { cp = 0x00ED; merged = true; }
+                        else if (cp == 'o') { cp = 0x00F3; merged = true; }
+                        else if (cp == 0x00F4) { cp = 0x1ED1; merged = true; } // ố
+                        else if (cp == 0x01A1) { cp = 0x1EDB; merged = true; } // ớ
+                        else if (cp == 'u') { cp = 0x00FA; merged = true; }
+                        else if (cp == 0x01B0) { cp = 0x1EE9; merged = true; } // ứ
+                        else if (cp == 'y') { cp = 0x00FD; merged = true; }
+                    } else if (next == 0x0309) { // hook above (hỏi)
+                        if (cp == 'a') { cp = 0x1EA3; merged = true; }
+                        else if (cp == 0x0103) { cp = 0x1EB3; merged = true; } // ẳ
+                        else if (cp == 0x00E2) { cp = 0x1EA9; merged = true; } // ẩ
+                        else if (cp == 'e') { cp = 0x1EBB; merged = true; }
+                        else if (cp == 0x00EA) { cp = 0x1EC3; merged = true; } // ể
+                        else if (cp == 'i') { cp = 0x1EC9; merged = true; }
+                        else if (cp == 'o') { cp = 0x1ECF; merged = true; }
+                        else if (cp == 0x00F4) { cp = 0x1ED5; merged = true; } // ổ
+                        else if (cp == 0x01A1) { cp = 0x1EDF; merged = true; } // ở
+                        else if (cp == 'u') { cp = 0x1EE7; merged = true; }
+                        else if (cp == 0x01B0) { cp = 0x1EED; merged = true; } // ử
+                        else if (cp == 'y') { cp = 0x1EF7; merged = true; }
+                    } else if (next == 0x0303) { // tilde (ngã)
+                        if (cp == 'a') { cp = 0x00E3; merged = true; }
+                        else if (cp == 0x0103) { cp = 0x1EB5; merged = true; } // ẵ
+                        else if (cp == 0x00E2) { cp = 0x1EAB; merged = true; } // ẫ
+                        else if (cp == 'e') { cp = 0x1EBD; merged = true; }
+                        else if (cp == 0x00EA) { cp = 0x1EC5; merged = true; } // ễ
+                        else if (cp == 'i') { cp = 0x0129; merged = true; }
+                        else if (cp == 'o') { cp = 0x00F5; merged = true; }
+                        else if (cp == 0x00F4) { cp = 0x1ED7; merged = true; } // ỗ
+                        else if (cp == 0x01A1) { cp = 0x1EE1; merged = true; } // ỡ
+                        else if (cp == 'u') { cp = 0x0169; merged = true; }
+                        else if (cp == 0x01B0) { cp = 0x1EEF; merged = true; } // ữ
+                        else if (cp == 'y') { cp = 0x1EF9; merged = true; }
+                    } else if (next == 0x0323) { // dot below (nặng)
+                        if (cp == 'a') { cp = 0x1EA1; merged = true; }
+                        else if (cp == 0x0103) { cp = 0x1EB7; merged = true; } // ặ
+                        else if (cp == 0x00E2) { cp = 0x1EAD; merged = true; } // ậ
+                        else if (cp == 'e') { cp = 0x1EB9; merged = true; }
+                        else if (cp == 0x00EA) { cp = 0x1EC7; merged = true; } // ệ
+                        else if (cp == 'i') { cp = 0x1ECB; merged = true; }
+                        else if (cp == 'o') { cp = 0x1ECD; merged = true; }
+                        else if (cp == 0x00F4) { cp = 0x1ED9; merged = true; } // ộ
+                        else if (cp == 0x01A1) { cp = 0x1EE3; merged = true; } // ợ
+                        else if (cp == 'u') { cp = 0x1EE5; merged = true; }
+                        else if (cp == 0x01B0) { cp = 0x1EF1; merged = true; } // ự
+                        else if (cp == 'y') { cp = 0x1EF5; merged = true; }
+                    }
+                }
+
+                if (merged) {
+                    i++;
+                } else {
+                    break;
+                }
+            }
+            composed.push_back(cp);
+        }
+        cps = std::move(composed);
+    }
+
+    // 3. Re-encode UTF-32 back to UTF-8
+    std::string result;
+    result.reserve(cps.size() * 3);
+    for (uint32_t cp : cps) {
         if (cp < 0x80) {
             result += static_cast<char>(cp);
         } else if (cp < 0x800) {
             result += static_cast<char>(0xC0 | (cp >> 6));
             result += static_cast<char>(0x80 | (cp & 0x3F));
-        } else {
+        } else if (cp < 0x10000) {
             result += static_cast<char>(0xE0 | (cp >> 12));
             result += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
             result += static_cast<char>(0x80 | (cp & 0x3F));
+        } else {
+            result += static_cast<char>(0xF0 | (cp >> 18));
+            result += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+            result += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+            result += static_cast<char>(0x80 | (cp & 0x3F));
         }
-
-        p += seqLen;
     }
+
     return result;
 }
 

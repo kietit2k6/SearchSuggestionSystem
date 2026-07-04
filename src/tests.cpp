@@ -98,6 +98,25 @@ void testTrieFallbackMapUTF8() {
     ASSERT(trie.insert("c++"));
     ASSERT(trie.search("c++"));
 
+    // Case-insensitivity checks for 'dấu nặng' words
+    ASSERT(trie.search("NẶNG"));
+    ASSERT(trie.search("LỊCH"));
+    ASSERT(trie.search("HỌC"));
+    ASSERT(trie.search("NHẬP"));
+    ASSERT(trie.search("VỰC"));
+    ASSERT(trie.search("CHỊ"));
+    ASSERT(trie.search("NHẬN"));
+
+    // NFD (decomposed) search matching NFC (precomposed)
+
+
+    ASSERT(trie.search("na\xCC\x86\xCC\xA3ng")); // "nặng" in NFD
+
+    // case folding for Ơ / Ư
+    ASSERT(trie.insert("Mơ"));
+    ASSERT(trie.search("mơ"));
+    ASSERT(trie.search("MƠ"));
+
     ASSERT(trie.getWordCount() == 11);
 
     // P0-A: autocomplete for Vietnamese prefix must find the word.

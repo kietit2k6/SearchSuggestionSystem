@@ -67,6 +67,10 @@ public:
     // ── Anti-spam tunable ─────────────────────────────────────────────────
     static constexpr int kMinFreqIntervalSecs = 3;
 
+    // UTF-8 aware case-fold and NFD-to-NFC compositor
+    static std::string normalize(const std::string& s);
+    static uint32_t    unicodeLower(uint32_t cp) noexcept;
+
 private:
     // Stored suggestions per node (serves autocomplete(prefix, N≤K)).
     static constexpr int kMaxStoredSuggestions = 50;
@@ -93,7 +97,4 @@ private:
     void updateSuggestionsHelper(TrieNode* node, const std::string& word, size_t depth);
     void rebuildAllSuggestions(TrieNode* node);
 
-    // UTF-8 aware case-fold (ASCII + Latin Extended-A/B + Vietnamese U+1E00-1EFF)
-    static std::string normalize(const std::string& s);
-    static uint32_t    unicodeLower(uint32_t cp) noexcept;
 };
