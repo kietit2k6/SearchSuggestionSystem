@@ -1,0 +1,10 @@
+/Users/htk/Desktop/SearchSuggestionSystem/build/CMakeFiles/imgui.dir
+/Users/htk/Desktop/SearchSuggestionSystem/build/CMakeFiles/SearchSuggestion.dir
+/Users/htk/Desktop/SearchSuggestionSystem/build/CMakeFiles/edit_cache.dir
+/Users/htk/Desktop/SearchSuggestionSystem/build/CMakeFiles/rebuild_cache.dir
+/Users/htk/Desktop/SearchSuggestionSystem/build/_deps/glfw-build/CMakeFiles/edit_cache.dir
+/Users/htk/Desktop/SearchSuggestionSystem/build/_deps/glfw-build/CMakeFiles/rebuild_cache.dir
+/Users/htk/Desktop/SearchSuggestionSystem/build/_deps/glfw-build/src/CMakeFiles/update_mappings.dir
+/Users/htk/Desktop/SearchSuggestionSystem/build/_deps/glfw-build/src/CMakeFiles/glfw.dir
+/Users/htk/Desktop/SearchSuggestionSystem/build/_deps/glfw-build/src/CMakeFiles/edit_cache.dir
+/Users/htk/Desktop/SearchSuggestionSystem/build/_deps/glfw-build/src/CMakeFiles/rebuild_cache.dir

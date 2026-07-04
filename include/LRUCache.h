@@ -6,6 +6,8 @@
 #include <unordered_map>
 #include <list>
 
+#include <mutex>
+
 class LRUCache {
 public:
     explicit LRUCache(std::size_t capacity = 128);
@@ -19,7 +21,7 @@ public:
     // Xóa toàn bộ cache — gọi sau mỗi insert / remove
     void invalidate();
 
-    std::size_t size() const { return map_.size(); }
+    std::size_t size() const;
 
 private:
     using Entry = std::pair<std::string, AutocompleteResult>;
@@ -28,4 +30,5 @@ private:
     std::list<Entry>         list_;  
     std::unordered_map<std::string,
         std::list<Entry>::iterator> map_;
+    mutable std::mutex       mutex_;
 };

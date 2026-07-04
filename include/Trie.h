@@ -1,97 +1,108 @@
-
+#pragma once
 
 #include "TrieNode.h"
-#include <string>
-#include <vector>
+
 #include <chrono>
-#include <memory>          
-#include <shared_mutex>    
-#include <optional>        
-#include <unordered_map>
+#include <cstdint>
+#include <functional>
 #include <list>
+#include <memory>
+#include <optional>
+#include <shared_mutex>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
-
-#include "SearchTypes.h"
 #include "LRUCache.h"
+#include "SearchTypes.h"
 
 class Trie {
 public:
     explicit Trie(std::size_t cacheCapacity = 128);
-    ~Trie() = default;  
+    ~Trie() = default;
 
-    // Thao tác cơ bản
+    // ── Basic operations ──────────────────────────────────────────────────
     bool insert(const std::string& word);
     bool remove(const std::string& word);
     bool search(const std::string& word) const;
     bool startsWith(const std::string& prefix) const;
 
-    // Batch insert 
-    int insertBatch(const std::vector<std::string>& words);
+    // ── Batch insert (deferred rebuild for faster bulk loading) ───────────
+    int  insertBatch(const std::vector<std::string>& words);
+    // Insert without rebuilding suggestions — call rebuildAll() afterwards.
+    int  insertBatchNoRebuild(const std::vector<std::string>& words);
+    void rebuildAll();
 
-    //Dùng LRU cache: gọi lặp với cùng prefix 
+    // ── Autocomplete (O(1) via pre-cached topSuggestions + LRU cache) ─────
     AutocompleteResult autocomplete(const std::string& prefix,
                                     int maxResults = 10) const;
 
+    // ── Fuzzy search fallback ─────────────────────────────────────────────
     std::vector<FuzzyResult> fuzzySearch(const std::string& word,
                                          int maxErrors = 1) const;
 
-    // Longest Common Prefix
+    // ── Frequency management (anti-spam: rate-limited via timestamp) ───────
+    // Returns false if rate-limited (< kMinFreqIntervalSecs since last call).
+    bool incrementFrequency(const std::string& word, int64_t timestamp = 0);
+    int  getFrequency(const std::string& word) const;
+
+    // ── Combined search+increment (1 lock instead of 3 separate calls) ────
+    struct SearchResult { bool found; bool incremented; int freqBefore; };
+    SearchResult searchAndUpdate(const std::string& word, int64_t timestamp = 0);
+
+    // ── Statistics ────────────────────────────────────────────────────────
+    int getWordCount() const;
+    int getNodeCount() const;
+    std::vector<std::string> getAllWords() const;
+
+    // ── Top-N most-searched words (for dashboard) ─────────────────────────
+    std::vector<std::pair<std::string, int>> getTopSearched(int n) const;
+
+    // ── Persistence ───────────────────────────────────────────────────────
+    bool saveToDisk(const std::string& filename) const;
+    bool saveToDiskAtomic(const std::string& filename) const;  // write→bak→rename
+    bool loadFromDisk(const std::string& filename);
+
+    // ── LCP helpers ───────────────────────────────────────────────────────
     std::string longestCommonPrefix() const;
     static std::string longestCommonPrefixDivideConquer(
             const std::vector<std::string>& words);
 
-    //  Thống kê 
-    int getWordCount() const;
-    int getNodeCount() const;
-
-    //duyệt trie khi được gọi, không cache riêng
-    std::vector<std::string> getAllWords() const;
-
-    //Quản lý frequency 
-    void incrementFrequency(const std::string& word);
-    int  getFrequency(const std::string& word) const;
-
-    //  Lưu cả cấu trúc cây lẫn frequency để không mất dữ liệu
-    //  khi restart ứng dụng.
-    bool saveToDisk(const std::string& filename) const;
-    bool loadFromDisk(const std::string& filename);
+    // ── Anti-spam tunable ─────────────────────────────────────────────────
+    static constexpr int kMinFreqIntervalSecs = 3;
 
 private:
+    // Stored suggestions per node (serves autocomplete(prefix, N≤K)).
+    static constexpr int kMaxStoredSuggestions = 50;
+
     std::unique_ptr<TrieNode> root_;
 
-    // SWMR: shared_lock cho const methods, unique_lock cho write
+    // SWMR: shared_lock for const methods, unique_lock for writes.
+    // cache_ is thread-safe via its own internal mutex; declared mutable so
+    // autocomplete() (const) can populate it.
     mutable std::shared_mutex mutex_;
     mutable LRUCache          cache_;
 
     int wordCount_ = 0;
-    int nodeCount_ = 1;   
+    int nodeCount_ = 1;
 
-    //  Internal helpers 
-
-    // Observer pointer 
+    // ── Internal helpers ──────────────────────────────────────────────────
     const TrieNode* findNode(const std::string& prefix) const;
+    TrieNode*       findNodeMutable(const std::string& prefix);
 
-    // Min-heap
-    void collectTopK(const TrieNode*       node,
-                     const std::string&    current,
-                     std::vector<WordEntry>& results,
-                     int                   maxResults) const;
+    TrieNode* insertWordNoLock(const std::string& normalizedWord);
+    bool      deleteHelper(TrieNode* node, const std::string& word, int depth);
 
-    void fuzzySearchHelper(const TrieNode*           node,
-                           char                      ch,
-                           const std::string&        target,
-                           std::string&              current,
-                           std::vector<int>&         prevRow,
-                           std::vector<FuzzyResult>& results,
-                           int                       maxErrors) const;
+    void rebuildNodeSuggestions(TrieNode* node);
+    void updateSuggestionsHelper(TrieNode* node, const std::string& word, size_t depth);
+    void rebuildAllSuggestions(TrieNode* node);
 
-    bool deleteHelper(TrieNode* node, const std::string& word, int depth);
-
-    // LCP divide & conquer
-    static std::string lcpHelper(const std::vector<std::string>& words,
-                                  int left, int right);
-    static std::string commonPrefix(const std::string& a,
-                                    const std::string& b);
-    //chuyển hoá chuỗi
+    // UTF-8 aware case-fold (ASCII + Latin Extended-A/B + Vietnamese U+1E00-1EFF)
     static std::string normalize(const std::string& s);
+    static uint32_t    unicodeLower(uint32_t cp) noexcept;
+
+    // LCP divide & conquer internals
+    static std::string lcpHelper(const std::vector<std::string>& words, int l, int r);
+    static std::string commonPrefix(const std::string& a, const std::string& b);
 };

@@ -1,5 +1,4 @@
-#include "LRUCache.h"
-#include "LRUCache.h"
+#include "../include/LRUCache.h"
 
 // Constructor
 LRUCache::LRUCache(std::size_t capacity)
@@ -10,6 +9,7 @@ LRUCache::LRUCache(std::size_t capacity)
 // Lấy dữ liệu từ cache
 std::optional<AutocompleteResult> LRUCache::get(const std::string& key)
 {
+    std::lock_guard<std::mutex> lock(mutex_);
     auto it = map_.find(key);
 
     // Không tìm thấy
@@ -26,6 +26,7 @@ std::optional<AutocompleteResult> LRUCache::get(const std::string& key)
 void LRUCache::put(const std::string& key,
                    const AutocompleteResult& value)
 {
+    std::lock_guard<std::mutex> lock(mutex_);
     auto it = map_.find(key);
 
     // Nếu khóa đã tồn tại
@@ -57,6 +58,14 @@ void LRUCache::put(const std::string& key,
 // Xóa toàn bộ cache
 void LRUCache::invalidate()
 {
+    std::lock_guard<std::mutex> lock(mutex_);
     list_.clear();
     map_.clear();
+}
+
+// Lấy kích thước hiện tại của cache
+std::size_t LRUCache::size() const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    return map_.size();
 }
