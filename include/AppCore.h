@@ -23,8 +23,9 @@
 struct AppStats {
     AppStats() = default;
 
-    std::atomic<uint64_t> totalSearches{0};
-    std::atomic<uint64_t> cacheHits{0};
+    std::atomic<uint64_t> totalSearches{0};        // submitted queries count
+    std::atomic<uint64_t> autocompleteRequests{0}; // autocomplete queries count
+    std::atomic<uint64_t> autocompleteCacheHits{0}; // autocomplete cache hit count
     std::atomic<uint64_t> newWordsLearned{0};
     std::chrono::steady_clock::time_point startTime{std::chrono::steady_clock::now()};
 
@@ -110,6 +111,72 @@ public:
 
     // Validate a complete word (e.g. from history recall or TAB complete).
     static Result validateWord(const std::string& word);
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SearchController — Logic controller separating GUI rendering from logic
+// ═══════════════════════════════════════════════════════════════════════════
+
+class SearchController {
+public:
+    SearchController(Trie& trie, AppStats& stats, AutoSaver& saver,
+                     Analytics& analytics, const std::string& saveFile);
+    ~SearchController() = default;
+
+    // Core actions
+    void refreshSuggestions(const std::string& query);
+    void submitSearch(const std::string& word);
+    void handleCtrlS();
+
+    // Reset messages
+    void clearValidationAndSpam() { validationMsg_.clear(); spamMsg_.clear(); }
+    void setValidationMsg(const std::string& msg) { validationMsg_ = msg; }
+    void clearSuggestions() { suggestions_.clear(); fuzzyResults_.clear(); }
+
+    // State accessors
+    const std::vector<WordEntry>& suggestions() const { return suggestions_; }
+    const std::vector<FuzzyResult>& fuzzyResults() const { return fuzzyResults_; }
+    const std::vector<std::string>& submitHistory() const { return submitHistory_; }
+    const std::string& spamMsg() const { return spamMsg_; }
+    const std::string& validationMsg() const { return validationMsg_; }
+    const std::string& statusMsg() const { return statusMsg_; }
+    const std::string& lastSearch() const { return lastSearch_; }
+    int lastFreqBefore() const { return lastFreqBefore_; }
+    bool isNewWord() const { return isNewWord_; }
+    int getWordFrequency(const std::string& word) const { return trie_.getFrequency(word); }
+    int getTrieWordCount() const { return trie_.getWordCount(); }
+    int getTrieNodeCount() const { return trie_.getNodeCount(); }
+
+    // Mutable state accessors for input callback
+    int& selectedIdx() { return selectedIdx_; }
+    bool& historyMode() { return historyMode_; }
+    int& historyIdx() { return historyIdx_; }
+
+private:
+    Trie&        trie_;
+    AppStats&    stats_;
+    AutoSaver&   saver_;
+    Analytics&   analytics_;
+    std::string  saveFile_;
+
+    // Search state
+    int                      selectedIdx_   = -1;
+    std::vector<WordEntry>   suggestions_;
+    std::vector<FuzzyResult> fuzzyResults_;
+
+    // History navigation state
+    std::vector<std::string> submitHistory_;
+    bool                     historyMode_   = false;
+    int                      historyIdx_    = 0;
+
+    // Anti-spam and notifications
+    std::unordered_map<std::string, int64_t> lastSearchedAt_;
+    std::string                              spamMsg_;
+    std::string                              lastSearch_;
+    int                                      lastFreqBefore_ = 0;
+    bool                                     isNewWord_      = false;
+    std::string                              statusMsg_;
+    std::string                              validationMsg_;
 };
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -45,24 +45,29 @@ target_link_libraries(imgui PUBLIC glfw)
 find_package(OpenGL REQUIRED)
 target_link_libraries(imgui PUBLIC OpenGL::GL)
 
-# ── Project Sources ────────────────────────────────────────────────────────
-set(SOURCE_FILES
-    src/main.cpp
+# ── Project Targets ────────────────────────────────────────────────────────
+add_library(SearchEngine STATIC
     src/Trie.cpp
     src/LRUCache.cpp
-    src/AppCore.cpp
-    src/GuiApp.cpp
-)
-
-set(HEADER_FILES
     include/Trie.h
     include/TrieNode.h
-    include/SearchTypes.h
     include/LRUCache.h
+    include/SearchTypes.h
+)
+target_include_directories(SearchEngine PUBLIC include)
+
+add_executable(SearchSuggestion
+    src/main.cpp
+    src/AppCore.cpp
+    src/GuiApp.cpp
     include/AppCore.h
     include/GuiApp.h
 )
-
-add_executable(SearchSuggestion ${SOURCE_FILES} ${HEADER_FILES})
 target_include_directories(SearchSuggestion PRIVATE include)
-target_link_libraries(SearchSuggestion PRIVATE imgui)
+target_link_libraries(SearchSuggestion PRIVATE SearchEngine imgui)
+
+add_executable(SearchSuggestionTests
+    src/tests.cpp
+)
+target_include_directories(SearchSuggestionTests PRIVATE include)
+target_link_libraries(SearchSuggestionTests PRIVATE SearchEngine)

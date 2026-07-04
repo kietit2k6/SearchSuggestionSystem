@@ -1,0 +1,21 @@
+# CMake build directory
+/build/
+
+# IDE settings
+/.vscode/
+/.idea/
+.DS_Store
+
+# Local configuration
+config.txt
+
+# Application database and backups
+trie_data.bin
+trie_data.bin.bak
+trie_data.bin.tmp
+trie_data.bin.analytics
+trie_data.bin.analytics.tmp
+imgui.ini
+*.tmp
+*.bak
+*.bin

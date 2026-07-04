@@ -1,26 +1,20 @@
 #include "GuiApp.h"
 
 #include <GLFW/glfw3.h>
-#include <imgui.h>
-#include <imgui_impl_glfw.h>
-#include <imgui_impl_opengl3.h>
+#include <backends/imgui_impl_glfw.h>
+#include <backends/imgui_impl_opengl3.h>
 
 #include <algorithm>
+#include <cstring>
 #include <ctime>
 #include <iostream>
-
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Construction / Lifecycle
 // ═══════════════════════════════════════════════════════════════════════════
 
-GuiApp::GuiApp(Trie& trie, AppStats& stats, AutoSaver& saver,
-               Analytics& analytics, const std::string& saveFile)
-    : trie_(trie), stats_(stats), saver_(saver),
-      analytics_(analytics), saveFile_(saveFile) {
-    // Populate session history cache from saved analytics
-    submitHistory_ = analytics_.history();
-}
+GuiApp::GuiApp(SearchController& controller, AppStats& stats, AutoSaver& saver, Analytics& analytics)
+    : controller_(controller), stats_(stats), saver_(saver), analytics_(analytics) {}
 
 GuiApp::~GuiApp() {
     shutdown();
@@ -144,18 +138,27 @@ void GuiApp::run() {
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
+        // Handle global hotkeys
+        ImGuiIO& io = ImGui::GetIO();
+        if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S)) {
+            controller_.handleCtrlS();
+        }
+        if (ImGui::IsKeyPressed(ImGuiKey_F1)) {
+            showHelp_ = !showHelp_;
+        }
+
         // ── Keyboard Check: detect query changes live ─────────────────────
         if (std::strcmp(queryBuf_, lastQuery) != 0) {
             std::strcpy(lastQuery, queryBuf_);
             currentQuery = queryBuf_;
-            validationMsg_.clear();
-            spamMsg_.clear();
+            controller_.clearValidationAndSpam();
 
-            if (currentQuery.empty()) {
-                suggestions_.clear();
-                fuzzyResults_.clear();
+            auto v = InputValidator::validateWord(currentQuery);
+            if (!v.ok && !currentQuery.empty()) {
+                controller_.setValidationMsg(v.reason);
+                controller_.clearSuggestions();
             } else {
-                refreshSuggestions();
+                controller_.refreshSuggestions(currentQuery);
             }
         }
 
@@ -184,12 +187,12 @@ void GuiApp::run() {
             ImGui::EndTabBar();
         }
 
-        // Floating overlays
-        if (showHelp_) drawHelpOverlay();
+        // Modals / Overlays
+        drawHelpOverlay();
 
-        ImGui::End();
+        ImGui::End(); // Workspace
 
-        // ── Render ────────────────────────────────────────────────────────
+        // Render Frame
         ImGui::Render();
         glViewport(0, 0, w, h);
         glClearColor(0.09f, 0.09f, 0.10f, 1.0f);
@@ -208,7 +211,7 @@ void GuiApp::drawMenuBar() {
     if (ImGui::BeginMenuBar()) {
         if (ImGui::BeginMenu("File")) {
             if (ImGui::MenuItem("Save snapshot", "Ctrl+S")) {
-                handleCtrlS();
+                controller_.handleCtrlS();
             }
             ImGui::Separator();
             if (ImGui::MenuItem("Exit", "Alt+F4")) {
@@ -258,25 +261,30 @@ void GuiApp::drawSearchTab() {
     if (inputSubmitted && std::strlen(queryBuf_) > 0) {
         // ENTER key submitted
         std::string word = queryBuf_;
-        if (selectedIdx_ >= 0 && selectedIdx_ < static_cast<int>(suggestions_.size())) {
-            word = suggestions_[selectedIdx_].word;
+        const auto& suggestions = controller_.suggestions();
+        int selectedIdx = controller_.selectedIdx();
+        if (selectedIdx >= 0 && selectedIdx < static_cast<int>(suggestions.size())) {
+            word = suggestions[selectedIdx].word;
         }
-        submitSearch(word);
+        controller_.submitSearch(word);
         queryBuf_[0] = '\0';
-        selectedIdx_ = -1;
-        refreshSuggestions();
+        controller_.selectedIdx() = -1;
+        controller_.refreshSuggestions("");
     }
 
     // Instant validation feedback text
-    if (!validationMsg_.empty()) {
-        ImGui::TextColored(ImVec4(0.9f, 0.2f, 0.2f, 1.0f), "⚠ %s", validationMsg_.c_str());
-    } else if (!spamMsg_.empty()) {
-        ImGui::TextColored(ImVec4(0.9f, 0.7f, 0.2f, 1.0f), "%s", spamMsg_.c_str());
-    } else if (historyMode_) {
+    const std::string& valMsg = controller_.validationMsg();
+    const std::string& spam = controller_.spamMsg();
+    const auto& submitHistory = controller_.submitHistory();
+    if (!valMsg.empty()) {
+        ImGui::TextColored(ImVec4(0.9f, 0.2f, 0.2f, 1.0f), "⚠ %s", valMsg.c_str());
+    } else if (!spam.empty()) {
+        ImGui::TextColored(ImVec4(0.9f, 0.7f, 0.2f, 1.0f), "%s", spam.c_str());
+    } else if (controller_.historyMode()) {
         ImGui::TextColored(ImVec4(0.9f, 0.7f, 0.2f, 1.0f), "↺ History recall index [%d/%d]",
-                           historyIdx_, static_cast<int>(submitHistory_.size()));
+                           controller_.historyIdx(), static_cast<int>(submitHistory.size()));
     } else {
-        ImGui::TextDisabled("Use [↑/↓] to browse recommendations, [TAB] to complete, [ENTER] to confirm.");
+        ImGui::TextDisabled("Use [Up/Down] to browse recommendations, [TAB] to complete, [ENTER] to confirm.");
     }
 
     ImGui::Separator();
@@ -287,20 +295,23 @@ void GuiApp::drawSearchTab() {
 
     ImGui::BeginChild("SuggestionsBox", ImVec2(0, 240), true);
 
-    if (!suggestions_.empty()) {
-        int maxFreq = 1;
-        for (const auto& s : suggestions_) maxFreq = std::max(maxFreq, s.frequency);
+    const auto& suggestions = controller_.suggestions();
+    const auto& fuzzyResults = controller_.fuzzyResults();
 
-        for (int i = 0; i < static_cast<int>(suggestions_.size()); ++i) {
-            renderSuggestionRow(suggestions_[i], i, maxFreq, false);
+    if (!suggestions.empty()) {
+        int maxFreq = 1;
+        for (const auto& s : suggestions) maxFreq = std::max(maxFreq, s.frequency);
+
+        for (int i = 0; i < static_cast<int>(suggestions.size()); ++i) {
+            renderSuggestionRow(suggestions[i], i, maxFreq, false);
         }
-    } else if (!fuzzyResults_.empty()) {
+    } else if (!fuzzyResults.empty()) {
         int maxFreq = 1;
-        for (const auto& r : fuzzyResults_) maxFreq = std::max(maxFreq, r.frequency);
+        for (const auto& r : fuzzyResults) maxFreq = std::max(maxFreq, r.frequency);
 
-        for (int i = 0; i < static_cast<int>(fuzzyResults_.size()); ++i) {
-            WordEntry we{fuzzyResults_[i].word, fuzzyResults_[i].frequency, 0};
-            renderSuggestionRow(we, i, maxFreq, true, fuzzyResults_[i].editDistance);
+        for (int i = 0; i < static_cast<int>(fuzzyResults.size()); ++i) {
+            WordEntry we{fuzzyResults[i].word, fuzzyResults[i].frequency, 0};
+            renderSuggestionRow(we, i, maxFreq, true, fuzzyResults[i].editDistance);
         }
     } else {
         if (std::strlen(queryBuf_) == 0) {
@@ -314,18 +325,19 @@ void GuiApp::drawSearchTab() {
 
     // ── Status banner ─────────────────────────────────────────────────────
     ImGui::Spacing();
-    if (!lastSearch_.empty()) {
-        int freq = trie_.getFrequency(lastSearch_);
-        if (isNewWord_) {
+    const std::string& lastSearch = controller_.lastSearch();
+    if (!lastSearch.empty()) {
+        int freq = controller_.getWordFrequency(lastSearch);
+        if (controller_.isNewWord()) {
             ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.2f, 1.0f),
-                               "✦ Learned: \"%s\" (initial frequency = 1)", lastSearch_.c_str());
+                               "✦ Learned: \"%s\" (initial frequency = 1)", lastSearch.c_str());
         } else {
             ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.2f, 1.0f),
                                "✓ Searched: \"%s\"  [Freq: %d → %d]",
-                               lastSearch_.c_str(), lastFreqBefore_, freq);
+                               lastSearch.c_str(), controller_.lastFreqBefore(), freq);
         }
-    } else if (!statusMsg_.empty()) {
-        ImGui::Text("%s", statusMsg_.c_str());
+    } else if (!controller_.statusMsg().empty()) {
+        ImGui::Text("%s", controller_.statusMsg().c_str());
     }
 
     // ── RIGHT COLUMN: Sidebar (Search History) ────────────────────────────
@@ -333,15 +345,15 @@ void GuiApp::drawSearchTab() {
     ImGui::TextColored(ImVec4(0.18f, 0.48f, 0.90f, 1.00f), "↺ Search History");
 
     ImGui::BeginChild("HistoryBox", ImVec2(0, 360), true);
-    if (submitHistory_.empty()) {
+    if (submitHistory.empty()) {
         ImGui::TextDisabled("No searches registered yet.");
     } else {
         // Show reverse chronological history
-        for (auto it = submitHistory_.rbegin(); it != submitHistory_.rend(); ++it) {
+        for (auto it = submitHistory.rbegin(); it != submitHistory.rend(); ++it) {
             std::string hWord = *it;
             // Draw a clickable button for history recall
             if (ImGui::Button(hWord.c_str(), ImVec2(-1.0f, 0))) {
-                submitSearch(hWord);
+                controller_.submitSearch(hWord);
             }
         }
     }
@@ -364,8 +376,8 @@ void GuiApp::drawDashboardTab() {
     ImGui::BeginChild("MetricsCard", ImVec2(0, 110), true);
     ImGui::Columns(4, "StatsColumns", false);
 
-    // Column 1
-    ImGui::Text("Total Searches");
+    // Column 1: search submissions
+    ImGui::Text("Search Submissions");
     ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.8f, 1.0f), "%llu", stats_.totalSearches.load());
     ImGui::NextColumn();
 
@@ -381,7 +393,7 @@ void GuiApp::drawDashboardTab() {
 
     // Column 4
     ImGui::Text("Trie Dictionary Size");
-    ImGui::TextColored(ImVec4(0.9f, 0.4f, 0.1f, 1.0f), "%d words", trie_.getWordCount());
+    ImGui::TextColored(ImVec4(0.9f, 0.4f, 0.1f, 1.0f), "%d words", controller_.getTrieWordCount());
 
     ImGui::Columns(1);
     ImGui::Separator();
@@ -450,68 +462,81 @@ void GuiApp::drawDashboardTab() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 void GuiApp::drawHelpOverlay() {
-    ImGui::SetNextWindowSize(ImVec2(400, 300), ImGuiCond_FirstUseEver);
-    ImGui::Begin("Help & Documentation", &showHelp_);
-    ImGui::TextWrapped("Search Suggestion Engine Manual:\n\n"
-                       "• Type characters in the search bar. Autocomplete results appear below instantly.\n"
-                       "• Select a result using the Up and Down keys, or click them directly with your mouse.\n"
-                       "• Press TAB to fill the search query with the selected suggestion.\n"
-                       "• Press ENTER to search/learn. If the query does not exist in the dictionary, "
-                       "the engine will insert it and set its initial frequency count to 1.\n"
-                       "• Clicking any word in the history column on the right will immediately execute a search.\n"
-                       "• The engine rate-limits incrementing frequencies to protect against query spam.\n"
-                       "• View graphs and charts in the Analytics Tab.");
-    ImGui::Spacing();
-    if (ImGui::Button("Close")) showHelp_ = false;
+    if (!showHelp_) return;
+
+    ImGui::SetNextWindowSize(ImVec2(480.0f, 320.0f), ImGuiCond_Always);
+    if (ImGui::Begin("Usage Help Guide", &showHelp_,
+                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize)) {
+        ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.8f, 1.0f), "⌨ Keyboard Controls");
+        ImGui::BulletText("Type characters in the search field to get recommendations.");
+        ImGui::BulletText("Press [UP] / [DOWN] arrow keys to navigate suggestions.");
+        ImGui::BulletText("Press [TAB] to complete selected suggestion into input.");
+        ImGui::BulletText("Press [ENTER] to submit search and increase query count.");
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.8f, 1.0f), "⚙ Hotkeys");
+        ImGui::BulletText("[Ctrl + S] : Save database snapshot instantly.");
+        ImGui::BulletText("[F1]       : Toggle this help guide screen.");
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        if (ImGui::Button("Close Guide", ImVec2(120.0f, 30.0f))) {
+            showHelp_ = false;
+        }
+    }
     ImGui::End();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Suggestion list item rendering
+// Render Suggestion Row
 // ═══════════════════════════════════════════════════════════════════════════
 
 void GuiApp::renderSuggestionRow(const WordEntry& e, int idx, int maxFreq,
                                  bool isFuzzy, int editDist) {
-    bool selected = (idx == selectedIdx_);
+    ImGui::PushID(idx);
 
-    // Color theme highlight logic:
-    // Bright cyan/green for recently searched, white for common, dimmed gray for dict-only
-    auto now = static_cast<int64_t>(std::time(nullptr));
-    bool recentlySearched = (e.lastAccess > 0 && (now - e.lastAccess) < 86400); // within 24h
-    bool everSearched     = (e.frequency > 0);
-
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4, 2));
-
-    // Choose row colors
-    ImVec4 textColor = ImVec4(0.95f, 0.95f, 0.95f, 1.00f);
-    if (selected) {
-        textColor = ImVec4(1.0f, 0.9f, 0.2f, 1.0f); // Bright yellow selection
-    } else if (recentlySearched) {
-        textColor = ImVec4(0.2f, 0.8f, 0.2f, 1.0f); // Bright green
-    } else if (!everSearched) {
-        textColor = ImVec4(0.5f, 0.5f, 0.5f, 1.00f); // Dimmed gray
+    // Apply selection styling background if active row
+    bool isSelected = (idx == controller_.selectedIdx());
+    if (isSelected) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
     }
 
-    // Clickable selectable item row
-    char label[128];
+    // Green text indicator if recently accessed
+    bool recentlySearched = (e.lastAccess > 0);
+    ImVec4 wordColor = recentlySearched ? ImVec4(0.4f, 0.9f, 0.4f, 1.0f)
+                                        : ImVec4(0.8f, 0.8f, 0.8f, 1.0f);
+
     if (isFuzzy) {
-        std::snprintf(label, sizeof(label), "  %s  (dist: %d)##%d", e.word.c_str(), editDist, idx);
+        // Red color for fuzzy matches
+        wordColor = ImVec4(0.9f, 0.4f, 0.4f, 1.0f);
+    }
+
+    // Selectable behavior
+    char selectLabel[128];
+    if (isFuzzy) {
+        std::snprintf(selectLabel, sizeof(selectLabel), "%s (fuzzy, dist=%d)", e.word.c_str(), editDist);
     } else {
-        std::snprintf(label, sizeof(label), "  %s%s##%d", e.word.c_str(), (recentlySearched ? "  [★]" : ""), idx);
+        std::snprintf(selectLabel, sizeof(selectLabel), "%s", e.word.c_str());
     }
 
-    ImGui::PushStyleColor(ImGuiCol_Text, textColor);
-    if (ImGui::Selectable(label, selected)) {
-        selectedIdx_ = idx;
-        std::strcpy(queryBuf_, e.word.c_str());
-        submitSearch(e.word);
+    ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, ImVec2(0.0f, 0.5f));
+    if (ImGui::Selectable(selectLabel, isSelected, ImGuiSelectableFlags_SpanAllColumns, ImVec2(0, 24.0f))) {
+        controller_.selectedIdx() = idx;
+        controller_.submitSearch(e.word);
         queryBuf_[0] = '\0';
-        selectedIdx_ = -1;
-        refreshSuggestions();
+        controller_.selectedIdx() = -1;
+        controller_.refreshSuggestions("");
     }
-    ImGui::PopStyleColor();
+    ImGui::PopStyleVar();
 
-    // Side-by-side progress bar indicating search frequency weight
+    if (isSelected) {
+        ImGui::PopStyleColor();
+    }
+
+    // Right-aligned frequency progress bar
     ImGui::SameLine(300.0f);
     float barWeight = static_cast<float>(e.frequency) / static_cast<float>(maxFreq);
     char progressLabel[32];
@@ -525,88 +550,7 @@ void GuiApp::renderSuggestionRow(const WordEntry& e, int idx, int maxFreq,
     ImGui::ProgressBar(barWeight, ImVec2(0.0f, 0.0f), progressLabel);
     ImGui::PopStyleColor();
 
-    ImGui::PopStyleVar();
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// UI Logic Helpers
-// ═══════════════════════════════════════════════════════════════════════════
-
-void GuiApp::refreshSuggestions() {
-    std::string q = queryBuf_;
-    if (q.empty()) {
-        suggestions_.clear();
-        fuzzyResults_.clear();
-        return;
-    }
-
-    auto res = trie_.autocomplete(q, 8);
-    suggestions_ = res.words;
-    stats_.totalSearches++;
-    if (res.fromCache) stats_.cacheHits++;
-
-    if (suggestions_.empty() && q.size() >= 3) {
-        fuzzyResults_ = trie_.fuzzySearch(q, 2);
-        if (fuzzyResults_.size() > 6) fuzzyResults_.resize(6);
-    } else {
-        fuzzyResults_.clear();
-    }
-}
-
-void GuiApp::submitSearch(const std::string& word) {
-    auto v = InputValidator::validateWord(word);
-    if (!v.ok) {
-        statusMsg_ = std::string("⚠ ") + (v.reason ? v.reason : "Invalid query!");
-        return;
-    }
-
-    auto now = static_cast<int64_t>(std::time(nullptr));
-    auto it  = lastSearchedAt_.find(word);
-    if (it != lastSearchedAt_.end() &&
-        (now - it->second) < static_cast<int64_t>(Trie::kMinFreqIntervalSecs)) {
-        int wait = static_cast<int>(Trie::kMinFreqIntervalSecs - (now - it->second));
-        spamMsg_ = "⚠ Rate limited — please wait " + std::to_string(wait) + "s";
-        return;
-    }
-    lastSearchedAt_[word] = now;
-
-    lastSearch_     = word;
-    lastFreqBefore_ = trie_.getFrequency(word);
-
-    auto result = trie_.searchAndUpdate(word, now);
-    if (result.found) {
-        lastFreqBefore_ = result.freqBefore;
-        isNewWord_      = false;
-    } else {
-        trie_.insert(word);
-        stats_.newWordsLearned++;
-        isNewWord_ = true;
-    }
-
-    analytics_.record(word, isNewWord_, false);
-
-    // Save in history queue
-    auto histIt = std::find(submitHistory_.begin(), submitHistory_.end(), word);
-    if (histIt != submitHistory_.end()) {
-        submitHistory_.erase(histIt);
-    }
-    submitHistory_.push_back(word);
-    if (submitHistory_.size() > 100) {
-        submitHistory_.erase(submitHistory_.begin());
-    }
-
-    statusMsg_.clear();
-    stats_.totalSearches++;
-
-    static uint64_t submitCount = 0;
-    if (++submitCount % 50 == 0) saver_.triggerNow();
-}
-
-void GuiApp::handleCtrlS() {
-    bool ok = trie_.saveToDiskAtomic(saveFile_);
-    analytics_.saveToDisk(saveFile_ + ".analytics");
-    saver_.triggerNow();
-    statusMsg_ = ok ? "Saved successfully!" : "Failed to save data!";
+    ImGui::PopID();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -617,59 +561,63 @@ int GuiApp::inputTextCallback(ImGuiInputTextCallbackData* data) {
     GuiApp* app = static_cast<GuiApp*>(data->UserData);
     if (!app) return 0;
 
+    auto& controller = app->controller_;
+    const auto& suggestions = controller.suggestions();
+    const auto& submitHistory = controller.submitHistory();
+
     switch (data->EventFlag) {
     case ImGuiInputTextFlags_CallbackCompletion: {
         // Tab completion
         std::string word;
-        if (app->selectedIdx_ >= 0 && app->selectedIdx_ < static_cast<int>(app->suggestions_.size())) {
-            word = app->suggestions_[app->selectedIdx_].word;
-        } else if (!app->suggestions_.empty()) {
-            word = app->suggestions_[0].word;
+        if (controller.selectedIdx() >= 0 && controller.selectedIdx() < static_cast<int>(suggestions.size())) {
+            word = suggestions[controller.selectedIdx()].word;
+        } else if (!suggestions.empty()) {
+            word = suggestions[0].word;
         }
 
         if (!word.empty()) {
             data->DeleteChars(0, data->BufTextLen);
             data->InsertChars(0, word.c_str());
-            app->selectedIdx_ = -1;
-            app->historyMode_ = false;
+            controller.selectedIdx() = -1;
+            controller.historyMode() = false;
         }
         break;
     }
     case ImGuiInputTextFlags_CallbackHistory: {
         if (data->EventKey == ImGuiKey_UpArrow) {
-            if (data->BufTextLen == 0 || app->historyMode_) {
+            if (data->BufTextLen == 0 || controller.historyMode()) {
                 // Navigate history
-                if (!app->submitHistory_.empty()) {
-                    app->historyIdx_ = std::min(app->historyIdx_ + 1, static_cast<int>(app->submitHistory_.size()));
-                    std::string hWord = app->submitHistory_[app->submitHistory_.size() - app->historyIdx_];
+                if (!submitHistory.empty()) {
+                    controller.historyIdx() = std::min(controller.historyIdx() + 1, static_cast<int>(submitHistory.size()));
+                    std::string hWord = submitHistory[submitHistory.size() - controller.historyIdx()];
                     data->DeleteChars(0, data->BufTextLen);
                     data->InsertChars(0, hWord.c_str());
-                    app->historyMode_ = true;
-                    app->selectedIdx_ = -1;
+                    controller.historyMode() = true;
+                    controller.selectedIdx() = -1;
                 }
-            } else if (!app->suggestions_.empty()) {
+            } else if (!suggestions.empty()) {
                 // Move selection up
-                if (app->selectedIdx_ <= 0) {
-                    app->selectedIdx_ = static_cast<int>(app->suggestions_.size()) - 1;
+                if (controller.selectedIdx() <= 0) {
+                    controller.selectedIdx() = static_cast<int>(suggestions.size()) - 1;
                 } else {
-                    app->selectedIdx_--;
+                    controller.selectedIdx()--;
                 }
             }
         } else if (data->EventKey == ImGuiKey_DownArrow) {
-            if (app->historyMode_) {
-                app->historyIdx_--;
-                if (app->historyIdx_ <= 0) {
-                    app->historyIdx_ = 0;
-                    app->historyMode_ = false;
+            if (controller.historyMode()) {
+                controller.historyIdx()--;
+                if (controller.historyIdx() <= 0) {
+                    controller.historyIdx() = 0;
+                    controller.historyMode() = false;
                     data->DeleteChars(0, data->BufTextLen);
                 } else {
-                    std::string hWord = app->submitHistory_[app->submitHistory_.size() - app->historyIdx_];
+                    std::string hWord = submitHistory[submitHistory.size() - controller.historyIdx()];
                     data->DeleteChars(0, data->BufTextLen);
                     data->InsertChars(0, hWord.c_str());
                 }
-            } else if (!app->suggestions_.empty()) {
+            } else if (!suggestions.empty()) {
                 // Move selection down
-                app->selectedIdx_ = (app->selectedIdx_ + 1) % static_cast<int>(app->suggestions_.size());
+                controller.selectedIdx() = (controller.selectedIdx() + 1) % static_cast<int>(suggestions.size());
             }
         }
         break;

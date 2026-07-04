@@ -108,8 +108,14 @@ const TrieNode* Trie::findNode(const std::string& prefix) const {
     const TrieNode* node = root_.get();
     for (char ch : prefix) {
         int idx = TrieNode::alphaIdx(ch);
-        if (idx < 0 || !node->alpha[idx]) return nullptr;
-        node = node->alpha[idx].get();
+        if (idx >= 0) {
+            if (!node->alpha[idx]) return nullptr;
+            node = node->alpha[idx].get();
+        } else {
+            auto it = node->fallback.find(ch);
+            if (it == node->fallback.end()) return nullptr;
+            node = it->second.get();
+        }
     }
     return node;
 }
@@ -118,8 +124,14 @@ TrieNode* Trie::findNodeMutable(const std::string& prefix) {
     TrieNode* node = root_.get();
     for (char ch : prefix) {
         int idx = TrieNode::alphaIdx(ch);
-        if (idx < 0 || !node->alpha[idx]) return nullptr;
-        node = node->alpha[idx].get();
+        if (idx >= 0) {
+            if (!node->alpha[idx]) return nullptr;
+            node = node->alpha[idx].get();
+        } else {
+            auto it = node->fallback.find(ch);
+            if (it == node->fallback.end()) return nullptr;
+            node = it->second.get();
+        }
     }
     return node;
 }
@@ -134,14 +146,23 @@ TrieNode* Trie::insertWordNoLock(const std::string& normalizedWord) {
     TrieNode* node = root_.get();
     for (char ch : normalizedWord) {
         int idx = TrieNode::alphaIdx(ch);
-        if (idx < 0) return nullptr;   // character not in supported alphabet
-
-        auto& slot = node->alpha[idx];
-        if (!slot) {
-            slot = std::make_unique<TrieNode>();
-            nodeCount_++;
+        TrieNode* nextNode = nullptr;
+        if (idx >= 0) {
+            auto& slot = node->alpha[idx];
+            if (!slot) {
+                slot = std::make_unique<TrieNode>();
+                nodeCount_++;
+            }
+            nextNode = slot.get();
+        } else {
+            auto& slot = node->fallback[ch];
+            if (!slot) {
+                slot = std::make_unique<TrieNode>();
+                nodeCount_++;
+            }
+            nextNode = slot.get();
         }
-        node = slot.get();
+        node = nextNode;
     }
 
     if (!node->isEndOfWord) {
@@ -206,18 +227,35 @@ bool Trie::deleteHelper(TrieNode* node, const std::string& word, int depth) {
         wordCount_--;
         // Return true if this node can be pruned (no children, not a word)
         for (const auto& slot : node->alpha) if (slot) return false;
+        if (!node->fallback.empty()) return false;
         return true;
     }
-    int idx = TrieNode::alphaIdx(word[depth]);
-    if (idx < 0 || !node->alpha[idx]) return false;
-
-    TrieNode* child = node->alpha[idx].get();
-    if (deleteHelper(child, word, depth + 1)) {
-        node->alpha[idx].reset();
-        nodeCount_--;
-        if (!node->isEndOfWord) {
-            for (const auto& slot : node->alpha) if (slot) return false;
-            return true;
+    char ch = word[depth];
+    int idx = TrieNode::alphaIdx(ch);
+    if (idx >= 0) {
+        if (!node->alpha[idx]) return false;
+        TrieNode* child = node->alpha[idx].get();
+        if (deleteHelper(child, word, depth + 1)) {
+            node->alpha[idx].reset();
+            nodeCount_--;
+            if (!node->isEndOfWord) {
+                for (const auto& slot : node->alpha) if (slot) return false;
+                if (!node->fallback.empty()) return false;
+                return true;
+            }
+        }
+    } else {
+        auto it = node->fallback.find(ch);
+        if (it == node->fallback.end()) return false;
+        TrieNode* child = it->second.get();
+        if (deleteHelper(child, word, depth + 1)) {
+            node->fallback.erase(it);
+            nodeCount_--;
+            if (!node->isEndOfWord) {
+                for (const auto& slot : node->alpha) if (slot) return false;
+                if (!node->fallback.empty()) return false;
+                return true;
+            }
         }
     }
     return false;
@@ -435,34 +473,39 @@ std::vector<FuzzyResult> Trie::fuzzySearch(const std::string& word, int maxError
 
     std::string norm = normalize(word);
     int n = static_cast<int>(norm.size());
-    std::vector<int> initRow(n + 1);
-    for (int i = 0; i <= n; ++i) initRow[i] = i;
 
-    // Use plain recursive lambda (captures by ref — avoids std::function overhead)
-    std::function<void(const TrieNode*, char, const std::vector<int>&)> dfs =
-        [&](const TrieNode* node, char ch, const std::vector<int>& prev) {
-            std::vector<int> curr(n + 1);
-            curr[0] = prev[0] + 1;
+    // Pre-allocate DP matrix: max depth support of 52 (covers words up to 50 chars).
+    // Index 0 is the start state, up to index 51.
+    std::vector<std::vector<int>> dp(52, std::vector<int>(n + 1));
+    for (int i = 0; i <= n; ++i) dp[0][i] = i;
 
-            int minVal = curr[0];
+    std::function<void(const TrieNode*, int, char)> dfs =
+        [&](const TrieNode* node, int depth, char ch) {
+            if (depth >= 52) return; // Guard against excessively deep trees
+
+            int prev_depth = depth - 1;
+            dp[depth][0] = dp[prev_depth][0] + 1;
+
+            int minVal = dp[depth][0];
             for (int i = 1; i <= n; ++i) {
                 int cost = (ch != norm[i - 1]) ? 1 : 0;
-                curr[i] = std::min({curr[i-1] + 1, prev[i] + 1, prev[i-1] + cost});
-                if (curr[i] < minVal) minVal = curr[i];
+                dp[depth][i] = std::min({dp[depth][i-1] + 1, dp[prev_depth][i] + 1, dp[prev_depth][i-1] + cost});
+                if (dp[depth][i] < minVal) minVal = dp[depth][i];
             }
 
-            if (curr[n] <= maxErrors && node->isEndOfWord)
-                results.push_back({node->word, curr[n], node->frequency});
+            if (dp[depth][n] <= maxErrors && node->isEndOfWord) {
+                results.push_back({node->word, dp[depth][n], node->frequency});
+            }
 
             if (minVal <= maxErrors) {
                 node->forEachChild([&](char c, const TrieNode* child) {
-                    dfs(child, c, curr);
+                    dfs(child, depth + 1, c);
                 });
             }
         };
 
     root_->forEachChild([&](char c, const TrieNode* child) {
-        dfs(child, c, initRow);
+        dfs(child, 1, c);
     });
 
     std::sort(results.begin(), results.end());
@@ -492,59 +535,6 @@ std::vector<std::string> Trie::getAllWords() const {
     };
     root_->forEachChild([&](char, const TrieNode* c) { dfs(c); });
     return out;
-}
-
-std::vector<std::pair<std::string, int>> Trie::getTopSearched(int n) const {
-    std::shared_lock<std::shared_mutex> lock(mutex_);
-    std::vector<std::pair<std::string, int>> out;
-    for (const auto& e : root_->topSuggestions) {
-        if (e.freq > 0) {
-            out.push_back({e.word, e.freq});
-            if (static_cast<int>(out.size()) >= n) break;
-        }
-    }
-    return out;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// LCP
-// ═══════════════════════════════════════════════════════════════════════════
-
-std::string Trie::longestCommonPrefix() const {
-    std::shared_lock<std::shared_mutex> lock(mutex_);
-    if (wordCount_ == 0) return "";
-    std::string prefix;
-    const TrieNode* node = root_.get();
-    int childCount = 0;
-    for (const auto& slot : node->alpha) if (slot) childCount++;
-    while (childCount == 1 && !node->isEndOfWord) {
-        for (int i = 0; i < TrieNode::kAlphaSlots; ++i) {
-            if (node->alpha[i]) {
-                prefix += (i < 26 ? static_cast<char>('a' + i) : '\'');
-                node = node->alpha[i].get();
-                break;
-            }
-        }
-        childCount = 0;
-        for (const auto& slot : node->alpha) if (slot) childCount++;
-    }
-    return prefix;
-}
-
-std::string Trie::longestCommonPrefixDivideConquer(const std::vector<std::string>& words) {
-    if (words.empty()) return "";
-    if (words.size() == 1) return words[0];
-    return lcpHelper(words, 0, static_cast<int>(words.size()) - 1);
-}
-std::string Trie::lcpHelper(const std::vector<std::string>& words, int l, int r) {
-    if (l == r) return words[l];
-    int mid = (l + r) / 2;
-    return commonPrefix(lcpHelper(words, l, mid), lcpHelper(words, mid+1, r));
-}
-std::string Trie::commonPrefix(const std::string& a, const std::string& b) {
-    int len = static_cast<int>(std::min(a.size(), b.size()));
-    for (int i = 0; i < len; ++i) if (a[i] != b[i]) return a.substr(0, i);
-    return a.substr(0, len);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

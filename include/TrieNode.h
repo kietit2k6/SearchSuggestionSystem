@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -30,15 +31,15 @@ struct SuggestionEntry {
 //   Instead we use std::array<27> (a-z + apostrophe) giving O(1) indexed
 //   access with a single pointer dereference and no heap allocation per node.
 //   Index mapping: 'a'-'z' → 0-25,  '\'' → 26.
-//   Any character outside this alphabet falls through to nullptr (ignored or
-//   handled by normalize() upstream).
+//   Any character outside this alphabet falls through to the fallback map.
 // ──────────────────────────────────────────────────────────────────────────
 struct TrieNode {
     // 27 slots: indices 0-25 = 'a'-'z', index 26 = '\'' (apostrophe)
-    // Other chars (digits, hyphen, UTF-8 bytes) are handled by the fallback
-    // unordered_map below; keeping them separate keeps the hot path fast.
     static constexpr int kAlphaSlots = 27;
     std::array<std::unique_ptr<TrieNode>, kAlphaSlots> alpha{};   // fast path
+
+    // Fallback map for characters outside the fast path (digits, spaces, hyphens, UTF-8 bytes)
+    std::unordered_map<char, std::unique_ptr<TrieNode>> fallback;
 
     bool        isEndOfWord    = false;
     int         frequency      = 0;
@@ -62,13 +63,9 @@ struct TrieNode {
     // Get child pointer (may be null) — const version.
     const TrieNode* child(char c) const noexcept {
         int idx = alphaIdx(c);
-        return (idx >= 0) ? alpha[idx].get() : nullptr;
-    }
-
-    // Get or create child — returns reference to unique_ptr slot.
-    std::unique_ptr<TrieNode>& childSlot(char c) {
-        int idx = alphaIdx(c);
-        return alpha[idx];   // caller checks idx >= 0 first
+        if (idx >= 0) return alpha[idx].get();
+        auto it = fallback.find(c);
+        return (it != fallback.end()) ? it->second.get() : nullptr;
     }
 
     // Iterate over all existing children (for DFS / rebuild).
@@ -78,6 +75,9 @@ struct TrieNode {
             if (alpha[i]) fn(static_cast<char>(i < 26 ? 'a' + i : '\''),
                              alpha[i].get());
         }
+        for (const auto& [ch, childPtr] : fallback) {
+            fn(ch, childPtr.get());
+        }
     }
 
     template <typename Fn>
@@ -85,6 +85,9 @@ struct TrieNode {
         for (int i = 0; i < kAlphaSlots; ++i) {
             if (alpha[i]) fn(static_cast<char>(i < 26 ? 'a' + i : '\''),
                              alpha[i]);
+        }
+        for (auto& [ch, childPtr] : fallback) {
+            fn(ch, childPtr);
         }
     }
 };

@@ -18,8 +18,8 @@ int AppStats::uptimeSecs() const {
         std::chrono::steady_clock::now() - startTime).count());
 }
 int AppStats::cacheHitPct() const {
-    uint64_t t = totalSearches.load();
-    return (t == 0) ? 0 : static_cast<int>(cacheHits.load() * 100 / t);
+    uint64_t t = autocompleteRequests.load();
+    return (t == 0) ? 0 : static_cast<int>(autocompleteCacheHits.load() * 100 / t);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -81,8 +81,13 @@ bool Analytics::saveToDisk(const std::string& path) const {
     std::lock_guard<std::mutex> lk(mu_);
     std::ofstream f(path);
     if (!f) return false;
-    f << "# SearchSuggestion Analytics\n";
-    for (const auto& [w, cnt] : wordCounts_) f << w << '\t' << cnt << '\n';
+    f << "# SearchSuggestion Chronological Analytics (timestamp\tisNew\tfromCache\tword)\n";
+    for (const auto& r : records_) {
+        f << r.timestamp << '\t'
+          << (r.isNewWord ? 1 : 0) << '\t'
+          << (r.fromCache ? 1 : 0) << '\t'
+          << r.word << '\n';
+    }
     return f.good();
 }
 
@@ -90,14 +95,46 @@ bool Analytics::loadFromDisk(const std::string& path) {
     std::ifstream f(path);
     if (!f) return false;
     std::lock_guard<std::mutex> lk(mu_);
+    records_.clear();
+    wordCounts_.clear();
     std::string line;
     while (std::getline(f, line)) {
         if (line.empty() || line[0] == '#') continue;
-        auto tab = line.find('\t');
-        if (tab != std::string::npos) {
-            try {
-                wordCounts_[line.substr(0, tab)] = std::stoi(line.substr(tab + 1));
-            } catch (...) {}
+        
+        // Count tabs to differentiate formats
+        size_t tabCount = 0;
+        for (char c : line) if (c == '\t') tabCount++;
+        
+        if (tabCount >= 3) {
+            std::stringstream ss(line);
+            std::string tsStr, isNewStr, fromCacheStr, word;
+            if (std::getline(ss, tsStr, '\t') &&
+                std::getline(ss, isNewStr, '\t') &&
+                std::getline(ss, fromCacheStr, '\t') &&
+                std::getline(ss, word)) {
+                try {
+                    SearchRecord r;
+                    r.timestamp = std::stoll(tsStr);
+                    r.isNewWord = (isNewStr == "1");
+                    r.fromCache = (fromCacheStr == "1");
+                    r.word = word;
+                    records_.push_back(r);
+                    wordCounts_[word]++;
+                } catch (...) {}
+            }
+        } else if (tabCount == 1) {
+            size_t tab = line.find('\t');
+            if (tab != std::string::npos) {
+                try {
+                    std::string word = line.substr(0, tab);
+                    int count = std::stoi(line.substr(tab + 1));
+                    wordCounts_[word] = count;
+                    int64_t now = static_cast<int64_t>(std::time(nullptr));
+                    for (int j = 0; j < count; ++j) {
+                        records_.push_back({word, now, false, false});
+                    }
+                } catch (...) {}
+            }
         }
     }
     return true;
@@ -129,6 +166,16 @@ std::string AutoSaver::lastSaveInfo() const {
     return lastInfo_;
 }
 
+static std::tm safeLocalTime(std::time_t t) {
+    std::tm tm_res;
+#if defined(_WIN32)
+    localtime_s(&tm_res, &t);
+#else
+    localtime_r(&t, &tm_res);
+#endif
+    return tm_res;
+}
+
 void AutoSaver::loop() {
     while (true) {
         std::unique_lock<std::mutex> lk(mu_);
@@ -141,7 +188,8 @@ void AutoSaver::loop() {
 
         auto t = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
         char buf[12];
-        std::strftime(buf, sizeof(buf), "%H:%M:%S", std::localtime(&t));
+        std::tm tm_val = safeLocalTime(t);
+        std::strftime(buf, sizeof(buf), "%H:%M:%S", &tm_val);
 
         std::lock_guard<std::mutex> lk2(mu_);
         lastInfo_ = ok ? (std::string(buf) + "  \033[92m✓\033[0m")
@@ -289,4 +337,94 @@ void generateFallbackWords(Trie& trie) {
         }
     }
     trie.insertBatch(all);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SearchController
+// ═══════════════════════════════════════════════════════════════════════════
+
+SearchController::SearchController(Trie& trie, AppStats& stats, AutoSaver& saver,
+                                   Analytics& analytics, const std::string& saveFile)
+    : trie_(trie), stats_(stats), saver_(saver),
+      analytics_(analytics), saveFile_(saveFile) {
+    submitHistory_ = analytics_.history();
+}
+
+void SearchController::refreshSuggestions(const std::string& query) {
+    if (query.empty()) {
+        suggestions_.clear();
+        fuzzyResults_.clear();
+        return;
+    }
+
+    auto res = trie_.autocomplete(query, 8);
+    suggestions_ = res.words;
+    stats_.autocompleteRequests++;
+    if (res.fromCache) stats_.autocompleteCacheHits++;
+
+    if (suggestions_.empty() && query.size() >= 3) {
+        fuzzyResults_ = trie_.fuzzySearch(query, 2);
+        if (fuzzyResults_.size() > 6) fuzzyResults_.resize(6);
+    } else {
+        fuzzyResults_.clear();
+    }
+}
+
+void SearchController::submitSearch(const std::string& word) {
+    auto v = InputValidator::validateWord(word);
+    if (!v.ok) {
+        statusMsg_ = std::string("⚠ ") + (v.reason ? v.reason : "Invalid query!");
+        return;
+    }
+
+    auto now = static_cast<int64_t>(std::time(nullptr));
+    auto it  = lastSearchedAt_.find(word);
+    if (it != lastSearchedAt_.end() &&
+        (now - it->second) < static_cast<int64_t>(Trie::kMinFreqIntervalSecs)) {
+        int wait = static_cast<int>(Trie::kMinFreqIntervalSecs - (now - it->second));
+        spamMsg_ = "⚠ Rate limited — please wait " + std::to_string(wait) + "s";
+        return;
+    }
+    lastSearchedAt_[word] = now;
+
+    lastSearch_     = word;
+    lastFreqBefore_ = trie_.getFrequency(word);
+
+    auto result = trie_.searchAndUpdate(word, now);
+    if (result.found) {
+        lastFreqBefore_ = result.freqBefore;
+        isNewWord_      = false;
+    } else {
+        if (trie_.insert(word)) {
+            stats_.newWordsLearned++;
+            isNewWord_ = true;
+        } else {
+            isNewWord_ = false;
+        }
+    }
+
+    analytics_.record(word, isNewWord_, false);
+
+    // Save in history queue
+    auto histIt = std::find(submitHistory_.begin(), submitHistory_.end(), word);
+    if (histIt != submitHistory_.end()) {
+        submitHistory_.erase(histIt);
+    }
+    submitHistory_.push_back(word);
+    if (submitHistory_.size() > 100) {
+        submitHistory_.erase(submitHistory_.begin());
+    }
+
+    statusMsg_.clear();
+    stats_.totalSearches++;
+
+    static uint64_t submitCount = 0;
+    if (++submitCount % 50 == 0) saver_.triggerNow();
+}
+
+void SearchController::handleCtrlS() {
+    bool ok = trie_.saveToDiskAtomic(saveFile_);
+    analytics_.saveToDisk(saveFile_ + ".analytics");
+    saver_.triggerNow();
+    statusMsg_ = ok ? "Saved successfully!" : "Failed to save data!";
 }

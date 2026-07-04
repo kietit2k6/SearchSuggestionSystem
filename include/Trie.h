@@ -56,18 +56,10 @@ public:
     int getNodeCount() const;
     std::vector<std::string> getAllWords() const;
 
-    // ── Top-N most-searched words (for dashboard) ─────────────────────────
-    std::vector<std::pair<std::string, int>> getTopSearched(int n) const;
-
     // ── Persistence ───────────────────────────────────────────────────────
     bool saveToDisk(const std::string& filename) const;
     bool saveToDiskAtomic(const std::string& filename) const;  // write→bak→rename
     bool loadFromDisk(const std::string& filename);
-
-    // ── LCP helpers ───────────────────────────────────────────────────────
-    std::string longestCommonPrefix() const;
-    static std::string longestCommonPrefixDivideConquer(
-            const std::vector<std::string>& words);
 
     // ── Anti-spam tunable ─────────────────────────────────────────────────
     static constexpr int kMinFreqIntervalSecs = 3;
@@ -101,8 +93,4 @@ private:
     // UTF-8 aware case-fold (ASCII + Latin Extended-A/B + Vietnamese U+1E00-1EFF)
     static std::string normalize(const std::string& s);
     static uint32_t    unicodeLower(uint32_t cp) noexcept;
-
-    // LCP divide & conquer internals
-    static std::string lcpHelper(const std::vector<std::string>& words, int l, int r);
-    static std::string commonPrefix(const std::string& a, const std::string& b);
 };
