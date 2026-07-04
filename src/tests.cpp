@@ -78,11 +78,27 @@ void testTrieFallbackMapUTF8() {
     ASSERT(trie.insert("xin chào"));
     ASSERT(trie.search("xin chào"));
 
+    // Vietnamese words with dot-below (dấu nặng): ạ, ặ, ậ, ẹ, ệ, ị, ọ, ộ, ợ, ụ, ự, ỵ
+    ASSERT(trie.insert("nặng"));
+    ASSERT(trie.search("nặng"));
+    ASSERT(trie.insert("lịch"));
+    ASSERT(trie.search("lịch"));
+    ASSERT(trie.insert("học"));
+    ASSERT(trie.search("học"));
+    ASSERT(trie.insert("nhập"));
+    ASSERT(trie.search("nhập"));
+    ASSERT(trie.insert("vực"));
+    ASSERT(trie.search("vực"));
+    ASSERT(trie.insert("chị"));
+    ASSERT(trie.search("chị"));
+    ASSERT(trie.insert("nhận"));
+    ASSERT(trie.search("nhận"));
+
     // ASCII punctuation not in fast-path
     ASSERT(trie.insert("c++"));
     ASSERT(trie.search("c++"));
 
-    ASSERT(trie.getWordCount() == 3);
+    ASSERT(trie.getWordCount() == 11);
 
     // P0-A: autocomplete for Vietnamese prefix must find the word.
     trie.rebuildAll();

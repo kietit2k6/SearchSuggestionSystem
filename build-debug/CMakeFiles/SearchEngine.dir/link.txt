@@ -1,0 +1,2 @@
+/usr/bin/ar qc libSearchEngine.a CMakeFiles/SearchEngine.dir/src/Trie.cpp.o CMakeFiles/SearchEngine.dir/src/LRUCache.cpp.o
+/usr/bin/ranlib libSearchEngine.a

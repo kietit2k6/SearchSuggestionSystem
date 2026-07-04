@@ -1,0 +1,1 @@
+/usr/bin/c++ -g -Wl,-search_paths_first -Wl,-headerpad_max_install_names CMakeFiles/SearchSuggestion.dir/src/main.cpp.o CMakeFiles/SearchSuggestion.dir/src/AppCore.cpp.o CMakeFiles/SearchSuggestion.dir/src/GuiApp.cpp.o -o SearchSuggestion  libSearchEngine.a libimgui.a _deps/glfw-build/src/libglfw3.a -framework Cocoa -framework IOKit -framework CoreFoundation -framework OpenGL
