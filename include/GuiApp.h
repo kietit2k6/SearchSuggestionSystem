@@ -4,6 +4,7 @@
 #include "Trie.h"
 #include <imgui.h>
 
+#include <chrono>
 #include <string>
 #include <vector>
 
@@ -51,6 +52,11 @@ private:
     // ── Active UI State ───────────────────────────────────────────────────
     char                     queryBuf_[128] = "";
     bool                     showHelp_      = false;
+
+    // Debounce: delay autocomplete until typing pauses for kDebounceMs milliseconds
+    static constexpr int                            kDebounceMs = 80;
+    std::chrono::steady_clock::time_point           lastQueryChangeTime_{};
+    bool                                            pendingRefresh_ = false;
 
     // Blinking cursor bg (changes on focus)
     static constexpr const char* BG_CURSOR_ = "\033[48;5;27m";

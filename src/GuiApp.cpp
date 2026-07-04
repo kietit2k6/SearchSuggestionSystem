@@ -155,10 +155,24 @@ void GuiApp::run() {
 
             auto v = InputValidator::validateWord(currentQuery);
             if (!v.ok && !currentQuery.empty()) {
+                // Show validation error immediately; no autocomplete needed.
                 controller_.setValidationMsg(v.reason);
                 controller_.clearSuggestions();
+                pendingRefresh_ = false;
             } else {
+                // Start / reset the debounce timer.
+                lastQueryChangeTime_ = std::chrono::steady_clock::now();
+                pendingRefresh_      = true;
+            }
+        }
+
+        // ── Debounced autocomplete refresh ───────────────────────────────
+        if (pendingRefresh_) {
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - lastQueryChangeTime_).count();
+            if (elapsed >= kDebounceMs) {
                 controller_.refreshSuggestions(currentQuery);
+                pendingRefresh_ = false;
             }
         }
 

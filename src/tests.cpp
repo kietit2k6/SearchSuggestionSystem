@@ -1,43 +1,96 @@
-#include "Trie.h"
-#include <cassert>
-#include <iostream>
-#include <vector>
-#include <algorithm>
-#include <cstdio>
+// SearchSuggestionTests — unit tests for the SearchEngine static library.
+//
+// Build: cmake -B build -DCMAKE_BUILD_TYPE=Debug && cmake --build build
+// Run:   ./build/SearchSuggestionTests
 
-#define RUN_TEST(fn) \
-    do { \
-        std::cout << "Running " << #fn << " ... " << std::flush; \
-        fn(); \
-        std::cout << "PASSED\n"; \
+#include "Trie.h"
+
+#include <algorithm>
+#include <cassert>
+#include <cstdio>
+#include <cstring>
+#include <iostream>
+#include <thread>
+#include <vector>
+
+// ── Test harness ─────────────────────────────────────────────────────────────
+
+static int gPassed = 0;
+static int gFailed = 0;
+
+#define ASSERT(expr)                                                         \
+    do {                                                                     \
+        if (!(expr)) {                                                       \
+            std::cerr << "  FAIL  " << __FILE__ << ":" << __LINE__          \
+                      << "  " << #expr << "\n";                              \
+            ++gFailed;                                                       \
+            return;   /* skip rest of test on first failure */               \
+        }                                                                    \
     } while (0)
+
+#define RUN_TEST(fn)                                        \
+    do {                                                    \
+        std::cout << "  Testing " << #fn << " ... " << std::flush; \
+        fn();                                               \
+        if (gFailed == 0) {                                 \
+            std::cout << "OK\n";                            \
+            ++gPassed;                                      \
+        } else {                                            \
+            std::cout << "(see above)\n";                   \
+        }                                                   \
+    } while (0)
+
+// ── Individual tests ─────────────────────────────────────────────────────────
+
+// P0-C: new words must start at frequency 1, not 0.
+void testInsertFrequencyStartsAtOne() {
+    Trie trie;
+    ASSERT(trie.insert("hello"));
+    ASSERT(trie.getFrequency("hello") == 1);
+    ASSERT(trie.getLastAccessTime("hello") > 0);
+
+    // Inserting again (already exists) must not reset/increment
+    ASSERT(!trie.insert("hello"));
+    ASSERT(trie.getFrequency("hello") == 1);
+}
 
 void testTrieBasic() {
     Trie trie;
-    assert(!trie.search("hello"));
-    assert(trie.insert("hello"));
-    assert(trie.search("hello"));
-    assert(!trie.insert("hello")); // already inserted
+    ASSERT(!trie.search("hello"));
+    ASSERT(trie.insert("hello"));
+    ASSERT(trie.search("hello"));
+    ASSERT(!trie.insert("hello")); // duplicate
 
-    assert(trie.startsWith("he"));
-    assert(trie.startsWith("hello"));
-    assert(!trie.startsWith("hi"));
-    assert(trie.getWordCount() == 1);
+    ASSERT(trie.startsWith("he"));
+    ASSERT(trie.startsWith("hello"));
+    ASSERT(!trie.startsWith("hi"));
+    ASSERT(trie.getWordCount() == 1);
 }
 
-void testTrieFallbackMap() {
+// P0-A: autocomplete must work for UTF-8 / Vietnamese words.
+void testTrieFallbackMapUTF8() {
     Trie trie;
-    // Test spaces, digits, punctuation, and Vietnamese UTF-8 precomposed characters
-    assert(trie.insert("vietnam 101"));
-    assert(trie.search("vietnam 101"));
+    // Space
+    ASSERT(trie.insert("vietnam 101"));
+    ASSERT(trie.search("vietnam 101"));
 
-    assert(trie.insert("xin chào"));
-    assert(trie.search("xin chào"));
+    // Vietnamese UTF-8 precomposed (U+00E0 = 'à', U+0169 = 'ũ')
+    ASSERT(trie.insert("xin chào"));
+    ASSERT(trie.search("xin chào"));
 
-    assert(trie.insert("antigravity@gemini"));
-    assert(trie.search("antigravity@gemini"));
+    // ASCII punctuation not in fast-path
+    ASSERT(trie.insert("c++"));
+    ASSERT(trie.search("c++"));
 
-    assert(trie.getWordCount() == 3);
+    ASSERT(trie.getWordCount() == 3);
+
+    // P0-A: autocomplete for Vietnamese prefix must find the word.
+    trie.rebuildAll();
+    AutocompleteResult res = trie.autocomplete("xin", 5);
+    bool found = false;
+    for (const auto& e : res.words)
+        if (e.word == "xin chào") { found = true; break; }
+    ASSERT(found); // fails before the updateSuggestionsHelper fix
 }
 
 void testTrieDeletion() {
@@ -47,53 +100,87 @@ void testTrieDeletion() {
     trie.insert("world");
 
     int nodesBefore = trie.getNodeCount();
-    assert(trie.remove("world"));
-    assert(!trie.search("world"));
-    int nodesAfter = trie.getNodeCount();
-    assert(nodesAfter < nodesBefore); // "world" branch should be pruned
+    ASSERT(trie.remove("world"));
+    ASSERT(!trie.search("world"));
+    ASSERT(trie.getNodeCount() < nodesBefore); // branch pruned
 
-    assert(trie.search("he"));
-    assert(trie.search("hello"));
-    assert(trie.remove("hello"));
-    assert(!trie.search("hello"));
-    assert(trie.search("he")); // "he" should not be deleted because it is a prefix of "hello" but still stands on its own
+    ASSERT(trie.search("he"));
+    ASSERT(trie.search("hello"));
+    ASSERT(trie.remove("hello"));
+    ASSERT(!trie.search("hello"));
+    ASSERT(trie.search("he")); // "he" is an independent word, must survive
 }
 
+// LRU cache: first hit misses, second hits; mutation invalidates.
 void testLRUCache() {
     Trie trie;
     trie.insert("apple");
     trie.insert("apricot");
+    trie.rebuildAll();
 
-    // First call caches autocomplete results
-    AutocompleteResult res1 = trie.autocomplete("ap", 5);
-    assert(!res1.fromCache);
-    assert(res1.words.size() == 2);
+    AutocompleteResult r1 = trie.autocomplete("ap", 5);
+    ASSERT(!r1.fromCache);
+    ASSERT(r1.words.size() == 2);
 
-    // Second call should hit the cache
-    AutocompleteResult res2 = trie.autocomplete("ap", 5);
-    assert(res2.fromCache);
+    AutocompleteResult r2 = trie.autocomplete("ap", 5);
+    ASSERT(r2.fromCache); // same key, must hit
 
-    // Modifying Trie invalidates cache
+    // Inserting a new word invalidates the cache entry.
     trie.insert("apex");
-    AutocompleteResult res3 = trie.autocomplete("ap", 5);
-    assert(!res3.fromCache);
-    assert(res3.words.size() == 3);
+    AutocompleteResult r3 = trie.autocomplete("ap", 5);
+    ASSERT(!r3.fromCache);
+    ASSERT(r3.words.size() == 3);
 }
 
+// Autocomplete ranking: higher-frequency word appears first.
 void testAutocompleteRanking() {
     Trie trie;
     trie.insert("test");
     trie.insert("testing");
     trie.insert("tester");
+    trie.rebuildAll();
 
-    // By default, alphabetical order or score order
-    AutocompleteResult res = trie.autocomplete("te", 5);
-    assert(res.words.size() == 3);
+    // All start at frequency 1 — alphabetical tiebreak expected.
+    AutocompleteResult r1 = trie.autocomplete("te", 5);
+    ASSERT(r1.words.size() == 3);
 
-    // Increment frequency of a word to push it up
-    trie.incrementFrequency("testing");
-    AutocompleteResult res2 = trie.autocomplete("te", 5);
-    assert(res2.words[0].word == "testing");
+    // Artificially advance time so the rate-limit window passes,
+    // then bump "testing" to frequency 2 (freq 1 from insert + 1 increment).
+    int64_t futureTs = static_cast<int64_t>(std::time(nullptr)) + 10;
+    bool ok = trie.incrementFrequency("testing", futureTs);
+    ASSERT(ok); // should succeed since timestamp > lastAccessTime
+
+    // After frequency bump, cache is invalidated — "testing" should rank first.
+    AutocompleteResult r2 = trie.autocomplete("te", 5);
+    ASSERT(!r2.words.empty());
+    ASSERT(r2.words[0].word == "testing");
+}
+
+// P0-B + SearchResult.lastAccessBefore
+void testSearchAndUpdate() {
+    Trie trie;
+    trie.insert("banana");
+    // insert() sets lastAccessTime = now. Use a timestamp past the rate-limit
+    // window so the first searchAndUpdate call actually increments the frequency.
+    int64_t base = static_cast<int64_t>(std::time(nullptr));
+    int64_t t1   = base + Trie::kMinFreqIntervalSecs + 1;
+
+    auto res1 = trie.searchAndUpdate("banana", t1);
+    ASSERT(res1.found);
+    ASSERT(res1.incremented);          // window has passed: freq 1 -> 2
+    ASSERT(res1.freqBefore == 1);
+
+    // Immediate re-submit at same timestamp: rate-limited.
+    auto res2 = trie.searchAndUpdate("banana", t1);
+    ASSERT(res2.found);
+    ASSERT(!res2.incremented);
+    ASSERT(res2.lastAccessBefore == t1); // captured before the (no-op) update
+
+    // Submit after another rate-limit window: should succeed again.
+    int64_t t2 = t1 + Trie::kMinFreqIntervalSecs + 1;
+    auto res3 = trie.searchAndUpdate("banana", t2);
+    ASSERT(res3.found && res3.incremented);
+    ASSERT(trie.getFrequency("banana") == 3);
 }
 
 void testFuzzySearch() {
@@ -102,61 +189,84 @@ void testFuzzySearch() {
     trie.insert("hell");
     trie.insert("help");
     trie.insert("yellow");
+    trie.rebuildAll();
 
-    // Fuzzy search for "hell" with maxErrors = 1
-    std::vector<FuzzyResult> res = trie.fuzzySearch("hell", 1);
-    // Should match "hell" (dist 0), "hello" (dist 1, deletion), "help" (dist 1, sub)
-    // Should NOT match "yellow" (dist 3)
-    assert(res.size() == 3);
+    auto res = trie.fuzzySearch("hell", 1);
+    // Expected: "hell" (dist 0), "hello" (dist 1), "help" (dist 1)
+    // "yellow" has dist ≥ 4 — must not appear.
+    ASSERT(res.size() == 3);
 
     bool hasHell = false, hasHello = false, hasHelp = false;
     for (const auto& r : res) {
-        if (r.word == "hell") { hasHell = true; assert(r.editDistance == 0); }
-        else if (r.word == "hello") { hasHello = true; assert(r.editDistance == 1); }
-        else if (r.word == "help") { hasHelp = true; assert(r.editDistance == 1); }
+        if (r.word == "hell")  { hasHell  = true; ASSERT(r.editDistance == 0); }
+        if (r.word == "hello") { hasHello = true; ASSERT(r.editDistance == 1); }
+        if (r.word == "help")  { hasHelp  = true; ASSERT(r.editDistance == 1); }
     }
-    assert(hasHell && hasHello && hasHelp);
+    ASSERT(hasHell && hasHello && hasHelp);
 }
 
 void testPersistence() {
-    std::string filename = "test_persistence.bin";
-    std::remove(filename.c_str());
+    const std::string file = "test_trie_persistence.bin";
+    std::remove(file.c_str());
+    std::remove((file + ".bak").c_str());
+    std::remove((file + ".tmp").c_str());
 
     {
         Trie trie;
         trie.insert("apple");
         trie.insert("banana");
-        trie.incrementFrequency("apple");
-        assert(trie.saveToDiskAtomic(filename));
+        // Bump "apple" with a timestamp beyond the rate-limit window.
+        trie.incrementFrequency("apple", static_cast<int64_t>(std::time(nullptr)) + 10);
+        ASSERT(trie.saveToDiskAtomic(file));
     }
 
     {
         Trie trie;
-        assert(trie.loadFromDisk(filename));
-        assert(trie.search("apple"));
-        assert(trie.search("banana"));
-        assert(trie.getFrequency("apple") == 2);
-        assert(trie.getFrequency("banana") == 1);
+        ASSERT(trie.loadFromDisk(file));
+        ASSERT(trie.search("apple"));
+        ASSERT(trie.search("banana"));
+        // "apple" was incremented once after insert, so frequency == 2.
+        ASSERT(trie.getFrequency("apple") == 2);
+        // "banana" was never incremented beyond insert, so frequency == 1.
+        ASSERT(trie.getFrequency("banana") == 1);
     }
 
-    std::remove(filename.c_str());
+    std::remove(file.c_str());
+    std::remove((file + ".bak").c_str());
 }
 
-int main() {
-    std::cout << "========================================\n";
-    std::cout << "Starting SearchEngine Unit Tests\n";
-    std::cout << "========================================\n";
+void testGetLastAccessTime() {
+    Trie trie;
+    ASSERT(trie.getLastAccessTime("unknown") == 0);
 
+    trie.insert("word");
+    int64_t t = trie.getLastAccessTime("word");
+    ASSERT(t > 0); // set during insert
+}
+
+// ── Main ─────────────────────────────────────────────────────────────────────
+
+int main() {
+    std::cout << "════════════════════════════════════════\n";
+    std::cout << "  SearchEngine Unit Tests\n";
+    std::cout << "════════════════════════════════════════\n";
+
+    // P0 regressions first
+    RUN_TEST(testInsertFrequencyStartsAtOne);   // P0-C
+    RUN_TEST(testSearchAndUpdate);              // P0-B
+    RUN_TEST(testTrieFallbackMapUTF8);          // P0-A
+
+    // Core correctness
     RUN_TEST(testTrieBasic);
-    RUN_TEST(testTrieFallbackMap);
     RUN_TEST(testTrieDeletion);
     RUN_TEST(testLRUCache);
     RUN_TEST(testAutocompleteRanking);
     RUN_TEST(testFuzzySearch);
     RUN_TEST(testPersistence);
+    RUN_TEST(testGetLastAccessTime);
 
-    std::cout << "========================================\n";
-    std::cout << "All SearchEngine Unit Tests Passed!\n";
-    std::cout << "========================================\n";
-    return 0;
+    std::cout << "════════════════════════════════════════\n";
+    std::cout << "  " << gPassed << " passed  |  " << gFailed << " failed\n";
+    std::cout << "════════════════════════════════════════\n";
+    return gFailed > 0 ? 1 : 0;
 }

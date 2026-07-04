@@ -169,8 +169,7 @@ private:
     bool                     historyMode_   = false;
     int                      historyIdx_    = 0;
 
-    // Anti-spam and notifications
-    std::unordered_map<std::string, int64_t> lastSearchedAt_;
+    // Anti-spam notifications (rate-limit state lives in Trie node, not here)
     std::string                              spamMsg_;
     std::string                              lastSearch_;
     int                                      lastFreqBefore_ = 0;

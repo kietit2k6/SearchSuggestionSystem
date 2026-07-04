@@ -7,7 +7,7 @@ A Google-like desktop search engine written in C++17 using Dear ImGui, GLFW, and
 - **High-Performance Trie Engine**: Custom C++ Trie supporting standard `a-z` characters and a fallback child map for spaces, punctuation, digits, and multi-byte UTF-8 characters (e.g., Vietnamese).
 - **O(1) Autocomplete**: Features a prefix recommendation cache inside Trie nodes combined with a thread-safe LRU Cache for high-frequency queries.
 - **Dynamic Ranking**: Autocomplete suggestions are ranked by a composite score of search frequency and query recency (exponential time decay).
-- **Fuzzy Search Fallback**: Damerau-Levenshtein distance calculation optimized with a pre-allocated matrix to prevent heap allocations during deep Trie traversal.
+- **Fuzzy Search Fallback**: Levenshtein distance calculation optimized with a pre-allocated matrix to prevent heap allocations during deep Trie traversal.
 - **Configurable Settings**: Customizable runtime settings (dictionary path, database storage location, auto-save interval, and cache size) loaded via `config.txt`.
 - **Keyboard navigation**: Use `[Up/Down]` arrows to select recommendations, `[Tab]` to complete, and `[Enter]` to submit.
 - **Hotkeys**:

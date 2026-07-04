@@ -47,13 +47,16 @@ public:
     bool incrementFrequency(const std::string& word, int64_t timestamp = 0);
     int  getFrequency(const std::string& word) const;
 
-    // ── Combined search+increment (1 lock instead of 3 separate calls) ────
-    struct SearchResult { bool found; bool incremented; int freqBefore; };
+    // Combined search+increment (1 lock instead of 3 separate calls).
+    // lastAccessBefore: the node's lastAccessTime *before* this call updated it;
+    // use this to compute the remaining rate-limit wait time.
+    struct SearchResult { bool found; bool incremented; int freqBefore; int64_t lastAccessBefore = 0; };
     SearchResult searchAndUpdate(const std::string& word, int64_t timestamp = 0);
 
     // ── Statistics ────────────────────────────────────────────────────────
-    int getWordCount() const;
-    int getNodeCount() const;
+    int     getWordCount() const;
+    int     getNodeCount() const;
+    int64_t getLastAccessTime(const std::string& word) const;
     std::vector<std::string> getAllWords() const;
 
     // ── Persistence ───────────────────────────────────────────────────────

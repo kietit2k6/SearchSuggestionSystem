@@ -157,6 +157,11 @@ AutoSaver::~AutoSaver() {
     { std::lock_guard<std::mutex> lk(mu_); running_ = false; }
     cv_.notify_all();
     if (thread_.joinable()) thread_.join();
+
+    // Best-effort final save: protects data accumulated since the last
+    // auto-save tick in case the caller (main) crashes before its own save.
+    trie_.saveToDiskAtomic(trieFile_);
+    analytics_.saveToDisk(analyticsFile_);
 }
 
 void AutoSaver::triggerNow() { cv_.notify_all(); }
@@ -250,10 +255,12 @@ int loadDictFile(Trie& trie, const std::string& path,
     while (std::getline(f, line)) {
         if (line.empty() || line.size() > 48) continue;
 
-        // Accept ASCII-only words (consistent with normalize's Latin-only trie)
+        // Accept full UTF-8 words: only reject C0/C1 control characters
+        // (bytes 0x00-0x1F and 0x7F-0x9F). Bytes >= 0x80 are valid UTF-8
+        // continuation/leading bytes handled by Trie's fallback map.
         bool ok = true;
         for (unsigned char c : line) {
-            if (c > 127) { ok = false; break; }
+            if (c < 0x20 || c == 0x7F) { ok = false; break; }
         }
         if (!ok) continue;
 
@@ -377,16 +384,12 @@ void SearchController::submitSearch(const std::string& word) {
         return;
     }
 
-    auto now = static_cast<int64_t>(std::time(nullptr));
-    auto it  = lastSearchedAt_.find(word);
-    if (it != lastSearchedAt_.end() &&
-        (now - it->second) < static_cast<int64_t>(Trie::kMinFreqIntervalSecs)) {
-        int wait = static_cast<int>(Trie::kMinFreqIntervalSecs - (now - it->second));
-        spamMsg_ = "⚠ Rate limited — please wait " + std::to_string(wait) + "s";
-        return;
-    }
-    lastSearchedAt_[word] = now;
+    // Rate-limit is enforced solely inside Trie::searchAndUpdate via the
+    // per-node lastAccessTime field + kMinFreqIntervalSecs. We do NOT duplicate
+    // that check here; the SearchResult::incremented flag tells us whether the
+    // Trie actually counted this submission or silently skipped it.
 
+    auto now = static_cast<int64_t>(std::time(nullptr));
     lastSearch_     = word;
     lastFreqBefore_ = trie_.getFrequency(word);
 
@@ -394,6 +397,17 @@ void SearchController::submitSearch(const std::string& word) {
     if (result.found) {
         lastFreqBefore_ = result.freqBefore;
         isNewWord_      = false;
+        if (!result.incremented) {
+            // Word found but rate-limited — inform the user without blocking.
+            // Use lastAccessBefore captured *before* the node was updated,
+            // so elapsed is accurate even when incremented == false.
+            int wait = std::max(0, static_cast<int>(
+                Trie::kMinFreqIntervalSecs - (now - result.lastAccessBefore)));
+            if (wait > 0) {
+                spamMsg_ = "⚠ Rate limited — please wait " + std::to_string(wait) + "s";
+                return;
+            }
+        }
     } else {
         if (trie_.insert(word)) {
             stats_.newWordsLearned++;

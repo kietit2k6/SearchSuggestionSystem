@@ -166,8 +166,12 @@ TrieNode* Trie::insertWordNoLock(const std::string& normalizedWord) {
     }
 
     if (!node->isEndOfWord) {
-        node->isEndOfWord = true;
-        node->word        = normalizedWord;
+        node->isEndOfWord   = true;
+        node->word          = normalizedWord;
+        // Start at frequency 1 so the word participates in ranking immediately
+        // and the UI shows "Freq: 0 \u2192 1" on first submission.
+        node->frequency     = 1;
+        node->lastAccessTime = static_cast<int64_t>(std::time(nullptr));
         wordCount_++;
     }
     return node;
@@ -329,6 +333,13 @@ int Trie::getFrequency(const std::string& word) const {
     return (node && node->isEndOfWord) ? node->frequency : 0;
 }
 
+int64_t Trie::getLastAccessTime(const std::string& word) const {
+    std::shared_lock<std::shared_mutex> lock(mutex_);
+    const TrieNode* node = findNode(normalize(word));
+    return (node && node->isEndOfWord) ? node->lastAccessTime : 0;
+}
+
+
 // Combined search + conditional increment — 1 lock acquisition instead of 3.
 Trie::SearchResult Trie::searchAndUpdate(const std::string& word, int64_t timestamp) {
     std::string norm = normalize(word);
@@ -342,7 +353,8 @@ Trie::SearchResult Trie::searchAndUpdate(const std::string& word, int64_t timest
         return {false, false, 0};
     }
 
-    int freqBefore = node->frequency;
+    int freqBefore         = node->frequency;
+    int64_t lastAccessBefore = node->lastAccessTime;
 
     // Anti-spam check
     bool incremented = false;
@@ -354,7 +366,7 @@ Trie::SearchResult Trie::searchAndUpdate(const std::string& word, int64_t timest
         incremented = true;
     }
 
-    return {true, incremented, freqBefore};
+    return {true, incremented, freqBefore, lastAccessBefore};
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -443,12 +455,22 @@ void Trie::rebuildNodeSuggestions(TrieNode* node) {
     }
 }
 
+// Update the topSuggestions cache for every ancestor of `word` from root downward.
+// Must traverse both alpha[] and fallback map children, otherwise UTF-8 words
+// (Vietnamese, etc.) silently drop their path and autocomplete breaks.
 void Trie::updateSuggestionsHelper(TrieNode* node, const std::string& word, size_t depth) {
     if (!node) return;
     if (depth < word.size()) {
-        int idx = TrieNode::alphaIdx(word[depth]);
-        if (idx >= 0 && node->alpha[idx])
-            updateSuggestionsHelper(node->alpha[idx].get(), word, depth + 1);
+        char ch  = word[depth];
+        int  idx = TrieNode::alphaIdx(ch);
+        TrieNode* next = nullptr;
+        if (idx >= 0) {
+            next = node->alpha[idx].get();
+        } else {
+            auto it = node->fallback.find(ch);
+            if (it != node->fallback.end()) next = it->second.get();
+        }
+        if (next) updateSuggestionsHelper(next, word, depth + 1);
     }
     rebuildNodeSuggestions(node);
 }
